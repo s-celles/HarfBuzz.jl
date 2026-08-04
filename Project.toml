@@ -9,7 +9,7 @@ FreeType2_jll = "d7e528f0-a631-5988-bf34-fe36492bcfd7"
 HarfBuzz_jll = "2e76f6c2-a576-52d4-95c1-20adfe4de566"
 
 [compat]
-FreeType = "3"
+FreeType = "3, 4.1"
 FreeType2_jll = "2"
 HarfBuzz_jll = "8"
 Test = "1"
