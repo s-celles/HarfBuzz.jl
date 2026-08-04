@@ -1,0 +1,15 @@
+# Allowlist .gitignore: nothing is tracked unless a rule below re-includes.
+*
+
+# Descend into directories
+!*/
+
+# Repository metadata
+!/.gitignore
+!/README.md
+!/CHANGELOG.md
+!/Project.toml
+!/Manifest.toml
+!/src/
+!/test/
+!/docs/
