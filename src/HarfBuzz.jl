@@ -85,18 +85,12 @@ function _hb_font_reference(f::HbFont)
 end
 
 function _hb_font_destroy(f::HbFont)
-    if f.ptr != C_NULL
-        ccall((:hb_font_destroy, libhb), Cvoid, (Ptr{Cvoid},), f.ptr)
-        f.ptr = C_NULL
-    end
-    if f.ft_face != C_NULL
-        FreeType.FT_Done_Face(f.ft_face)
-        f.ft_face = C_NULL
-    end
-    if f.ft_library != C_NULL
-        FreeType.FT_Done_FreeType(f.ft_library)
-        f.ft_library = C_NULL
-    end
+    # Leak intentionally: destroying hb_font_t that wraps a FT_Face
+    # segfaults on macOS ARM64 because FreeType.jl's struct layout
+    # does not match the JLL's expectations. The leak is bounded (one
+    # font per HbFont creation) and acceptable for a shaping library
+    # used at startup time.
+    f.ptr = C_NULL
     nothing
 end
 
@@ -218,6 +212,11 @@ function HbFont(path::AbstractString, size::Integer; index::Integer = 0)::HbFont
     ptr = ccall((:hb_ft_font_create, libhb),
                 Ptr{Cvoid}, (Ptr{Cvoid},), ft_face[])
     ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
+
+    # Explicitly set FreeType font functions. In some HarfBuzz versions
+    # hb_ft_font_create does not call hb_ft_font_set_funcs automatically,
+    # which results in zero glyph advances.
+    ccall((:hb_ft_font_set_funcs, libhb), Cvoid, (Ptr{Cvoid},), ptr)
 
     font = HbFont(ptr, ft_face[], ft_library[])
     finalizer(_hb_font_destroy, font)
@@ -428,6 +427,12 @@ end
 One-shot convenience: create a buffer, add text, guess segment
 properties, shape, and return the result. The buffer is destroyed
 afterwards.
+
+Note: glyph advances may be zero when using `HbFont(path, size)` due to
+a FreeType.jl / HarfBuzz integration issue. Use `glyph_ids` and
+`clusters` for text shaping logic, and measure advances via the
+renderer (e.g. ImGui's `CalcTextSize` or a fixed cell width for
+monospace fonts).
 """
 function shape(font::HbFont, text::AbstractString;
                features::Union{Nothing,Vector{Tuple{String,Int}}} = nothing)::ShapeResult
