@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial package scaffold wrapping HarfBuzz via `HarfBuzz_jll`.
 - `HbBlob`, `HbFace`, `HbFont`, `HbBuffer` opaque handle types with
   automatic finalizer-based cleanup.
+- FreeType-backed font creation (`HbFont(path, size)`) via
+  `hb_ft_font_create` so that glyph advances are available.
 - `shape!` / `shape` — the core shaping API: takes a font + text and
   returns glyph infos and positions.
 - `add_text!`, `clear!`, `guess_segment_properties!` — buffer management.
@@ -19,3 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_glyph_count` — face glyph count.
 - Tests for face/font creation, glyph availability, ASCII/CJK shaping,
   and regional indicator pair shaping.
+- GitHub Actions CI (Julia 1.12/1/nightly on Linux/macOS/Windows),
+  CompatHelper, TagBot, and Dependabot.
+- Documentation via Documenter.jl with API reference.

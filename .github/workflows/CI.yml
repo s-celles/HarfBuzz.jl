@@ -6,25 +6,23 @@ on:
     tags: ['*']
   pull_request:
   workflow_dispatch:
-
 concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
-
 jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    permissions:
+    permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
     strategy:
       fail-fast: false
       matrix:
         version:
-          # Project.toml declares julia = "1.12", so the current LTS (1.10)
-          # cannot resolve. Pin the declared minimum instead of 'lts'.
           - '1.12'
           - '1'
           - 'nightly'
@@ -34,10 +32,6 @@ jobs:
           - windows-latest
         arch:
           - x64
-        exclude:
-          # macOS-latest runners are Apple Silicon (arm64); x64 is not available
-          - os: macOS-latest
-            arch: x64
         include:
           - os: macOS-latest
             arch: aarch64
