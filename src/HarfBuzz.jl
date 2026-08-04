@@ -1,7 +1,5 @@
 module HarfBuzz
 
-__precompile__(false)
-
 using HarfBuzz_jll
 import FreeType
 import FreeTypeAbstraction
@@ -46,81 +44,69 @@ end
 # --- hb_font_t ------------------------------------------------------------
 
 """
-    HbFont(path::AbstractString, size::Integer; index::Integer=0)
+    HbFont(name::AbstractString, size::Integer; index::Integer=0)
 
-Open a font file via FreeType and create a HarfBuzz font from the
-FT_Face so that text shaping is available. The font is opened at
-`size` pixels.
+Open a font for HarfBuzz shaping. `name` is either a path to a font
+file or a font family name:
 
-Use `findfont` from FreeTypeAbstraction to locate a font by family
-name on any platform:
+- If `name` is an existing file path, the font is opened directly via
+  FreeType. `index` selects the face inside a TTC (TrueType
+  Collection).
+- Otherwise `name` is treated as a family name and resolved
+  cross-platform via `FreeTypeAbstraction.findfont` (e.g. `"Menlo"`,
+  `"DejaVu Sans Mono"`, `"Consolas"`). `index` is ignored in this
+  branch.
 
-```julia
-using HarfBuzz, FreeTypeAbstraction
-path = findfont("Menlo")  # cross-platform font discovery
-font = HbFont(path, 18)
-```
-"""
-function HbFont(path::AbstractString, size::Integer; index::Integer = 0)::HbFont
-    # Open the font via FreeType
-    ft_library = Ref{Ptr{FreeType.FT_LibraryRec_}}()
-    err = FreeType.FT_Init_FreeType(ft_library)
-    err != 0 && throw(ErrorException("FT_Init_FreeType failed: $err"))
-
-    ft_face = Ref{Ptr{FreeType.FT_FaceRec_}}()
-    err = FreeType.FT_New_Face(ft_library[], String(path), Clong(index), ft_face)
-    err != 0 && throw(ErrorException("FT_New_Face failed for $path: $err"))
-
-    # Set the char size (in 1/64th of a pixel)
-    char_size = Int(size) * 64
-    err = FreeType.FT_Set_Char_Size(ft_face[], 0, char_size, 0, 0)
-    err != 0 && throw(ErrorException("FT_Set_Char_Size failed: $err"))
-
-    # Create a HarfBuzz font from the FT_Face
-    ptr = ccall((:hb_ft_font_create, libhb),
-                Ptr{Cvoid}, (Ptr{Cvoid},), ft_face[])
-    ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
-
-    font = HbFont(ptr, ft_face[], ft_library[], nothing)
-    finalizer(_hb_font_destroy, font)
-    return font
-end
-
-"""
-    HbFont(family::AbstractString, size::Integer)
-
-Find a font by family name using FreeTypeAbstraction's cross-platform
-font discovery, then create a HarfBuzz font from it.
+The font is opened at `size` pixels.
 
 ```julia
-font = HbFont("Menlo", 18)       # macOS
-font = HbFont("DejaVu Sans Mono", 18)  # Linux
-font = HbFont("Consolas", 18)    # Windows
+font = HbFont("/System/Library/Fonts/Menlo.ttc", 18)
+font = HbFont("Menlo", 18)
 ```
-
-If the font is not found, throws an `ErrorException`.
 """
-function HbFont(family::AbstractString, size::Integer)::HbFont
-    ftfont = FreeTypeAbstraction.findfont(family)
-    ftfont === nothing && throw(ErrorException(
-        "font not found: '$family'. Searched paths: " *
-        join(FreeTypeAbstraction.fontpaths(), ", ")))
-    # Set the char size on the FT_Face
-    char_size = Int(size) * 64
-    FreeType.FT_Set_Char_Size(ftfont, 0, char_size, 0, 0)
-    # Create HarfBuzz font from the FT_Face's C pointer
-    ptr = ccall((:hb_ft_font_create, libhb),
-                Ptr{Cvoid}, (Ptr{Cvoid},), ftfont.ft_ptr)
-    ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
-    # Keep a reference to the FTFont so it is not GC'd while the
-    # HarfBuzz font is alive. Store it in ft_face as a Ptr (not ideal
-    # but avoids adding a field); the finalizer does not destroy it.
-    font = HbFont(ptr, ftfont.ft_ptr, C_NULL, ftfont)
-    finalizer(_hb_font_destroy, font)
-    # Prevent GC of the FTFont by anchoring it
-    # (HbFont holds ft_face = ftfont.ft_ptr, but not the Julia object.
-    # We rely on the leak-by-design finalizer to keep things alive.)
-    return font
+function HbFont(name::AbstractString, size::Integer; index::Integer = 0)::HbFont
+    if isfile(String(name))
+        # --- Path branch: open the file directly via FreeType ---------
+        ft_library = Ref{Ptr{FreeType.FT_LibraryRec_}}()
+        err = FreeType.FT_Init_FreeType(ft_library)
+        err != 0 && throw(ErrorException("FT_Init_FreeType failed: $err"))
+
+        # FT_New_Face writes a `FT_Face` (== Ptr{__JL_FT_FaceRec_})
+        # into the ref; the HbFont.ft_face field (Ptr{FT_FaceRec_})
+        # accepts it via the usual pointer reinterpretation.
+        face_ref = Ref{FreeType.FT_Face}()
+        err = FreeType.FT_New_Face(ft_library[], String(name),
+                                   Clong(index), face_ref)
+        err != 0 && throw(ErrorException(
+            "FT_New_Face failed for $name: $err"))
+        ft_face = face_ref[]
+
+        char_size = Int(size) * 64
+        err = FreeType.FT_Set_Char_Size(ft_face, 0, char_size, 0, 0)
+        err != 0 && throw(ErrorException("FT_Set_Char_Size failed: $err"))
+
+        ptr = ccall((:hb_ft_font_create, libhb),
+                    Ptr{Cvoid}, (Ptr{Cvoid},), ft_face)
+        ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
+
+        font = HbFont(ptr, ft_face, ft_library[], nothing)
+        finalizer(_hb_font_destroy, font)
+        return font
+    else
+        # --- Family branch: resolve via FreeTypeAbstraction -----------
+        ftfont = FreeTypeAbstraction.findfont(String(name))
+        ftfont === nothing && throw(ErrorException(
+            "font not found: '$name'. Searched paths: " *
+            join(FreeTypeAbstraction.fontpaths(), ", ")))
+        char_size = Int(size) * 64
+        FreeType.FT_Set_Char_Size(ftfont, 0, char_size, 0, 0)
+        ptr = ccall((:hb_ft_font_create, libhb),
+                    Ptr{Cvoid}, (Ptr{Cvoid},), ftfont.ft_ptr)
+        ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
+        font = HbFont(ptr, ftfont.ft_ptr, C_NULL, ftfont)
+        finalizer(_hb_font_destroy, font)
+        return font
+    end
 end
 
 # --- hb_buffer_t ----------------------------------------------------------
