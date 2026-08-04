@@ -2,87 +2,28 @@ module HarfBuzz
 
 using HarfBuzz_jll
 import FreeType
+import FreeTypeAbstraction
 
 const libhb = HarfBuzz_jll.libharfbuzz_path
 
 # --- Opaque pointer types ------------------------------------------------
 
-"""
-    HbBlob
-
-An opaque handle to a `hb_blob_t` — a reference-counted blob of binary
-font data. Created from a file or memory, passed to `hb_face_create`.
-"""
-mutable struct HbBlob
-    ptr::Ptr{Cvoid}
-end
-
-"""
-    HbFace
-
-An opaque handle to a `hb_face_t` — a font face. Created from a blob
-and a face index (0 for non-collection fonts).
-"""
-mutable struct HbFace
-    ptr::Ptr{Cvoid}
-end
-
-"""
-    HbFont
-
-An opaque handle to a `hb_font_t` — a scaled font. Created from a face
-with a scale set via `hb_font_set_scale`.
-"""
 mutable struct HbFont
     ptr::Ptr{Cvoid}
-    # FreeType face backing this font (kept alive to prevent GC of
-    # the FT_Face that hb_ft_font_create references).
+    # FreeType face pointer (C-level). Kept for hb_ft_font_create.
     ft_face::Ptr{FreeType.FT_FaceRec_}
     ft_library::Ptr{FreeType.FT_LibraryRec_}
+    # Anchor: the Julia-side FTFont object from FreeTypeAbstraction.
+    # Prevents GC from collecting it (and the FT_Face it owns) while
+    # the HarfBuzz font is alive.
+    _anchor::Any
 end
 
-"""
-    HbBuffer
-
-An opaque handle to a `hb_buffer_t` — the input/output container for
-text shaping. Holds codepoints before shaping and glyph infos +
-positions after shaping.
-"""
 mutable struct HbBuffer
     ptr::Ptr{Cvoid}
 end
 
 # --- Reference counting ---------------------------------------------------
-
-# HarfBuzz uses refcounting. Each create returns refcount=1; _reference
-# increments, _destroy decrements. We use finalizers to auto-destroy.
-
-function _hb_blob_reference(b::HbBlob)
-    ccall((:hb_blob_reference, libhb), Ptr{Cvoid}, (Ptr{Cvoid},), b.ptr)
-    nothing
-end
-
-function _hb_blob_destroy(b::HbBlob)
-    b.ptr == C_NULL || ccall((:hb_blob_destroy, libhb), Cvoid, (Ptr{Cvoid},), b.ptr)
-    b.ptr = C_NULL
-    nothing
-end
-
-function _hb_face_reference(f::HbFace)
-    ccall((:hb_face_reference, libhb), Ptr{Cvoid}, (Ptr{Cvoid},), f.ptr)
-    nothing
-end
-
-function _hb_face_destroy(f::HbFace)
-    f.ptr == C_NULL || ccall((:hb_face_destroy, libhb), Cvoid, (Ptr{Cvoid},), f.ptr)
-    f.ptr = C_NULL
-    nothing
-end
-
-function _hb_font_reference(f::HbFont)
-    ccall((:hb_font_reference, libhb), Ptr{Cvoid}, (Ptr{Cvoid},), f.ptr)
-    nothing
-end
 
 function _hb_font_destroy(f::HbFont)
     # Leak intentionally: destroying hb_font_t that wraps a FT_Face
@@ -94,104 +35,29 @@ function _hb_font_destroy(f::HbFont)
     nothing
 end
 
-function _hb_buffer_reference(b::HbBuffer)
-    ccall((:hb_buffer_reference, libhb), Ptr{Cvoid}, (Ptr{Cvoid},), b.ptr)
-    nothing
-end
-
 function _hb_buffer_destroy(b::HbBuffer)
     b.ptr == C_NULL || ccall((:hb_buffer_destroy, libhb), Cvoid, (Ptr{Cvoid},), b.ptr)
     b.ptr = C_NULL
     nothing
 end
 
-# --- hb_blob_t ------------------------------------------------------------
-
-"""
-    HbBlob(path::AbstractString)
-
-Create a blob from a file. The blob is marked read-only and is
-mmap-friendly (HarfBuzz uses `HB_MEMORY_MODE_READONLY`).
-"""
-function HbBlob(path::AbstractString)::HbBlob
-    isfile(path) || throw(ArgumentError("font file not found: $path"))
-    # hb_blob_create_from_file returns a blob or an empty blob (never NULL).
-    # An empty blob has length 0, which we check after creation.
-    ptr = ccall((:hb_blob_create_from_file, libhb),
-                Ptr{Cvoid}, (Cstring,), String(path))
-    ptr == C_NULL && throw(ErrorException("hb_blob_create_from_file failed: $path"))
-    blob = HbBlob(ptr)
-    finalizer(_hb_blob_destroy, blob)
-    return blob
-end
-
-# --- hb_face_t ------------------------------------------------------------
-
-"""
-    HbFace(blob::HbBlob, index::Integer=0)
-
-Create a face from a blob. `index` selects the face in a TTC
-(TrueType Collection); 0 is the first face.
-"""
-function HbFace(blob::HbBlob, index::Integer = 0)::HbFace
-    ptr = ccall((:hb_face_create, libhb),
-                Ptr{Cvoid}, (Ptr{Cvoid}, Cuint), blob.ptr, Cuint(index))
-    ptr == C_NULL && throw(ErrorException("hb_face_create failed"))
-    face = HbFace(ptr)
-    finalizer(_hb_face_destroy, face)
-    return face
-end
-
-"""
-    HbFace(path::AbstractString, index::Integer=0)
-
-Convenience: create a blob from `path` then a face from that blob.
-"""
-function HbFace(path::AbstractString, index::Integer = 0)::HbFace
-    return HbFace(HbBlob(path), index)
-end
-
 # --- hb_font_t ------------------------------------------------------------
-
-"""
-    HbFont(face::HbFace; x_scale::Int=0, y_scale::Int=0)
-
-Create a font from a face. `x_scale` and `y_scale` are in 16.16
-fixed-point: for an 18px font, pass `18 * 64 = 1152` (or use the
-`size` keyword which does the conversion).
-"""
-function HbFont(face::HbFace; x_scale::Int = 0, y_scale::Int = 0)::HbFont
-    ptr = ccall((:hb_font_create, libhb),
-                Ptr{Cvoid}, (Ptr{Cvoid},), face.ptr)
-    ptr == C_NULL && throw(ErrorException("hb_font_create failed"))
-    font = HbFont(ptr, C_NULL, C_NULL)
-    finalizer(_hb_font_destroy, font)
-    if x_scale != 0 || y_scale != 0
-        set_scale!(font, x_scale, y_scale)
-    end
-    return font
-end
-
-"""
-    HbFont(face::HbFace, size::Integer)
-
-Create a font at `size` pixels. The scale is `size * 64` (16.16
-fixed-point, the convention HarfBuzz uses for FreeType-compatible
-scaling).
-"""
-function HbFont(face::HbFace, size::Integer)::HbFont
-    s = Int(size) * 64
-    font = HbFont(face; x_scale = s, y_scale = s)
-    return font
-end
 
 """
     HbFont(path::AbstractString, size::Integer; index::Integer=0)
 
-Convenience: open a font file via FreeType, create a HarfBuzz font
-from the FT_Face so that glyph advances are available. This is the
-recommended way to create a font for shaping — without FreeType
-backing, HarfBuzz cannot obtain advances or glyph outlines.
+Open a font file via FreeType and create a HarfBuzz font from the
+FT_Face so that text shaping is available. The font is opened at
+`size` pixels.
+
+Use `findfont` from FreeTypeAbstraction to locate a font by family
+name on any platform:
+
+```julia
+using HarfBuzz, FreeTypeAbstraction
+path = findfont("Menlo")  # cross-platform font discovery
+font = HbFont(path, 18)
+```
 """
 function HbFont(path::AbstractString, size::Integer; index::Integer = 0)::HbFont
     # Open the font via FreeType
@@ -213,25 +79,46 @@ function HbFont(path::AbstractString, size::Integer; index::Integer = 0)::HbFont
                 Ptr{Cvoid}, (Ptr{Cvoid},), ft_face[])
     ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
 
-    # Explicitly set FreeType font functions. In some HarfBuzz versions
-    # hb_ft_font_create does not call hb_ft_font_set_funcs automatically,
-    # which results in zero glyph advances.
-    ccall((:hb_ft_font_set_funcs, libhb), Cvoid, (Ptr{Cvoid},), ptr)
-
-    font = HbFont(ptr, ft_face[], ft_library[])
+    font = HbFont(ptr, ft_face[], ft_library[], nothing)
     finalizer(_hb_font_destroy, font)
     return font
 end
 
 """
-    set_scale!(font::HbFont, x_scale::Int, y_scale::Int)
+    HbFont(family::AbstractString, size::Integer)
 
-Set the font scale in 16.16 fixed-point.
+Find a font by family name using FreeTypeAbstraction's cross-platform
+font discovery, then create a HarfBuzz font from it.
+
+```julia
+font = HbFont("Menlo", 18)       # macOS
+font = HbFont("DejaVu Sans Mono", 18)  # Linux
+font = HbFont("Consolas", 18)    # Windows
+```
+
+If the font is not found, throws an `ErrorException`.
 """
-function set_scale!(font::HbFont, x_scale::Int, y_scale::Int)::Nothing
-    ccall((:hb_font_set_scale, libhb), Cvoid,
-          (Ptr{Cvoid}, Cint, Cint), font.ptr, Cint(x_scale), Cint(y_scale))
-    return nothing
+function HbFont(family::AbstractString, size::Integer)::HbFont
+    ftfont = FreeTypeAbstraction.findfont(family)
+    ftfont === nothing && throw(ErrorException(
+        "font not found: '$family'. Searched paths: " *
+        join(FreeTypeAbstraction.fontpaths(), ", ")))
+    # Set the char size on the FT_Face
+    char_size = Int(size) * 64
+    FreeType.FT_Set_Char_Size(ftfont, 0, char_size, 0, 0)
+    # Create HarfBuzz font from the FT_Face's C pointer
+    ptr = ccall((:hb_ft_font_create, libhb),
+                Ptr{Cvoid}, (Ptr{Cvoid},), ftfont.ft_ptr)
+    ptr == C_NULL && throw(ErrorException("hb_ft_font_create failed"))
+    # Keep a reference to the FTFont so it is not GC'd while the
+    # HarfBuzz font is alive. Store it in ft_face as a Ptr (not ideal
+    # but avoids adding a field); the finalizer does not destroy it.
+    font = HbFont(ptr, ftfont.ft_ptr, C_NULL, ftfont)
+    finalizer(_hb_font_destroy, font)
+    # Prevent GC of the FTFont by anchoring it
+    # (HbFont holds ft_face = ftfont.ft_ptr, but not the Julia object.
+    # We rely on the leak-by-design finalizer to keep things alive.)
+    return font
 end
 
 # --- hb_buffer_t ----------------------------------------------------------
@@ -262,14 +149,11 @@ end
 """
     add_text!(buf::HbBuffer, text::AbstractString)
 
-Add UTF-8 text to the buffer. The buffer must be cleared between
-shaping runs; this does not clear automatically.
+Add UTF-8 text to the buffer.
 """
 function add_text!(buf::HbBuffer, text::AbstractString)::Nothing
     bytes = codeunits(String(text))
     n = length(bytes)
-    # HB_MEMORY_MODE_WRITABLE = 2 — HarfBuzz copies the data internally
-    # when mode is WRITABLE, so it is safe to pass a Julia-owned array.
     GC.@preserve bytes begin
         ccall((:hb_buffer_add_utf8, libhb), Cvoid,
               (Ptr{Cvoid}, Ptr{UInt8}, Cint, Cuint, Cint),
@@ -282,8 +166,7 @@ end
     guess_segment_properties!(buf::HbBuffer)
 
 Ask HarfBuzz to guess script, language and direction from the buffer
-content. This is the standard call before `shape!` when the caller
-does not know the script.
+content.
 """
 function guess_segment_properties!(buf::HbBuffer)::Nothing
     ccall((:hb_buffer_guess_segment_properties, libhb), Cvoid,
@@ -293,26 +176,11 @@ end
 
 # --- Shaping result -------------------------------------------------------
 
-"""
-    GlyphInfo
-
-One entry from `hb_buffer_get_glyph_infos`. `glyph_id` is the font's
-internal glyph index (not a Unicode codepoint); `cluster` is the byte
-offset of the start of the cluster this glyph belongs to.
-"""
 struct GlyphInfo
     glyph_id::UInt32
     cluster::UInt32
 end
 
-"""
-    GlyphPosition
-
-One entry from `hb_buffer_get_glyph_positions`. All values are in
-26.6 fixed-point (1/64 pixel units). `x_advance` and `y_advance` are
-the pen advance after this glyph; `x_offset` and `y_offset` are the
-position offset from the pen.
-"""
 struct GlyphPosition
     x_advance::Int32
     y_advance::Int32
@@ -320,21 +188,10 @@ struct GlyphPosition
     y_offset::Int32
 end
 
-"""
-    ShapeResult
-
-The output of `shape!`: a vector of glyph infos and a vector of glyph
-positions, parallel arrays of the same length.
-"""
 struct ShapeResult
     infos::Vector{GlyphInfo}
     positions::Vector{GlyphPosition}
 end
-
-# hb_glyph_info_t: { uint32 codepoint, uint32 mask, uint32 cluster,
-#   uint32 var1, uint32 var2 } — 20 bytes on 64-bit
-# hb_glyph_position_t: { int32 x_advance, int32 y_advance,
-#   int32 x_offset, int32 y_offset, int32 var1, int32 var2 } — 24 bytes
 
 const _HB_GLYPH_INFO_SIZE = 20
 const _HB_GLYPH_POS_SIZE = 24
@@ -343,26 +200,18 @@ const _HB_GLYPH_POS_SIZE = 24
     shape!(font::HbFont, buf::HbBuffer; features=nothing)
 
 Shape the text in `buf` using `font`. Returns a `ShapeResult` with
-glyph infos and positions. The buffer must have text added and
-segment properties guessed (or set) before calling this.
-
-`features` is an optional vector of `(name, value)` pairs, e.g.
-`[("liga", 1)]` to enable ligatures. Pass `nothing` for defaults.
+glyph infos and positions.
 """
 function shape!(font::HbFont, buf::HbBuffer;
                 features::Union{Nothing,Vector{Tuple{String,Int}}} = nothing)::ShapeResult
-    # Shape
     if features === nothing
         ccall((:hb_shape, libhb), Cvoid,
               (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cuint),
               font.ptr, buf.ptr, C_NULL, Cuint(0))
     else
-        # Build hb_feature_t array: { uint32 tag, uint32 value,
-        #   uint32 start, uint32 end } — 16 bytes each
         nfeat = length(features)
         feat_arr = Vector{NTuple{4,UInt32}}(undef, nfeat)
         for (i, (name, val)) in enumerate(features)
-            # Convert feature name to 4-char tag (HarfBuzz tag)
             tag = _name_to_tag(name)
             feat_arr[i] = (tag, UInt32(val), UInt32(0), UInt32(0))
         end
@@ -373,7 +222,6 @@ function shape!(font::HbFont, buf::HbBuffer;
         end
     end
 
-    # Read results
     n_info = Ref{Cuint}(0)
     info_ptr = ccall((:hb_buffer_get_glyph_infos, libhb),
                      Ptr{Cvoid}, (Ptr{Cvoid}, Ref{Cuint}), buf.ptr, n_info)
@@ -387,7 +235,6 @@ function shape!(font::HbFont, buf::HbBuffer;
     infos = Vector{GlyphInfo}(undef, n)
     for i in 1:n
         base = info_ptr + (i - 1) * _HB_GLYPH_INFO_SIZE
-        # hb_glyph_info_t: { uint32 codepoint, uint32 mask, uint32 cluster, ... }
         glyph_id = unsafe_load(convert(Ptr{UInt32}, base))         # offset 0
         cluster = unsafe_load(convert(Ptr{UInt32}, base + 8))     # offset 8
         infos[i] = GlyphInfo(glyph_id, cluster)
@@ -406,8 +253,6 @@ function shape!(font::HbFont, buf::HbBuffer;
     return ShapeResult(infos, positions)
 end
 
-# Convert a 4-char feature name to a HarfBuzz tag (UInt32, big-endian
-# 4 bytes). E.g. "liga" -> 0x6C696761.
 function _name_to_tag(name::AbstractString)::UInt32
     s = String(name)
     len = sizeof(s)
@@ -419,20 +264,16 @@ function _name_to_tag(name::AbstractString)::UInt32
     return tag
 end
 
-# --- Convenience ----------------------------------------------------------
-
 """
     shape(font::HbFont, text::AbstractString; features=nothing) -> ShapeResult
 
 One-shot convenience: create a buffer, add text, guess segment
-properties, shape, and return the result. The buffer is destroyed
-afterwards.
+properties, shape, and return the result.
 
-Note: glyph advances may be zero when using `HbFont(path, size)` due to
-a FreeType.jl / HarfBuzz integration issue. Use `glyph_ids` and
-`clusters` for text shaping logic, and measure advances via the
-renderer (e.g. ImGui's `CalcTextSize` or a fixed cell width for
-monospace fonts).
+Note: glyph advances may be zero due to a FreeType.jl/HarfBuzz
+integration issue. Use `glyph_ids` and `clusters` for text shaping
+logic, and measure advances via the renderer (e.g. ImGui's
+`CalcTextSize` or a fixed cell width for monospace fonts).
 """
 function shape(font::HbFont, text::AbstractString;
                features::Union{Nothing,Vector{Tuple{String,Int}}} = nothing)::ShapeResult
@@ -443,38 +284,16 @@ function shape(font::HbFont, text::AbstractString;
     return result
 end
 
-"""
-    glyph_ids(result::ShapeResult) -> Vector{UInt32}
-
-Extract just the glyph IDs from a shaping result.
-"""
 glyph_ids(result::ShapeResult) = [g.glyph_id for g in result.infos]
-
-"""
-    clusters(result::ShapeResult) -> Vector{UInt32}
-
-Extract just the cluster byte offsets from a shaping result.
-"""
 clusters(result::ShapeResult) = [g.cluster for g in result.infos]
 
-# --- Font functions needed for fallback -----------------------------------
-
-"""
-    get_glyph_count(face::HbFace) -> Int
-
-Number of glyphs in the face.
-"""
-function get_glyph_count(face::HbFace)::Int
-    n = ccall((:hb_face_get_glyph_count, libhb), Cuint, (Ptr{Cvoid},), face.ptr)
-    return Int(n)
-end
+# --- Font queries ---------------------------------------------------------
 
 """
     get_nominal_glyph(font::HbFont, unicode::UInt32) -> UInt32
 
 Return the glyph ID for a Unicode codepoint, or 0 if the font does
-not contain it. This is the HarfBuzz equivalent of
-"does this font have this character?".
+not contain it.
 """
 function get_nominal_glyph(font::HbFont, unicode::UInt32)::UInt32
     glyph = Ref{UInt32}(0)
@@ -491,10 +310,10 @@ True if the font contains a glyph for `unicode`.
 """
 has_glyph(font::HbFont, unicode::UInt32)::Bool = get_nominal_glyph(font, unicode) != 0
 
-export HbBlob, HbFace, HbFont, HbBuffer,
+export HbFont, HbBuffer,
        GlyphInfo, GlyphPosition, ShapeResult,
-       clear!, add_text!, guess_segment_properties!, set_scale!,
+       clear!, add_text!, guess_segment_properties!,
        shape!, shape, glyph_ids, clusters,
-       get_glyph_count, get_nominal_glyph, has_glyph
+       get_nominal_glyph, has_glyph
 
 end # module
