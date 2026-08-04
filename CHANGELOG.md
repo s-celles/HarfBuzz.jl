@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `HarfBuzz_jll` compat from `8` to `100.14002` (drop the legacy
+  8.x line; require the current HarfBuzz release).
+
 ### Added
 
 - Initial package scaffold wrapping HarfBuzz via `HarfBuzz_jll`.
