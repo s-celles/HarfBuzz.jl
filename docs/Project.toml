@@ -1,3 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 HarfBuzz = "9e8b9c2b-5c3e-4e6f-b1a4-2c0f6b4f3e2a"
+
+[compat]
+Documenter = "1.17.0"
