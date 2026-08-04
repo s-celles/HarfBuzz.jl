@@ -1,5 +1,7 @@
 module HarfBuzz
 
+__precompile__(false)
+
 using HarfBuzz_jll
 import FreeType
 import FreeTypeAbstraction
