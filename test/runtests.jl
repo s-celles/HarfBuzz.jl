@@ -1,8 +1,14 @@
 using TestItemRunner
 
-# The package resolves no font names: tests locate font *files* by
-# filename. Anything not found here is skipped, so a machine without a
-# given font never fails the suite -- see ROADMAP open question 10.
+# Every assertion about shaping runs against a font vendored with the
+# suite, so results do not depend on what a machine happens to have
+# installed. See test/fonts/README.md for its provenance and for what it
+# is known to exercise.
+const TEST_FONT = joinpath(@__DIR__, "fonts", "NotoSans-subset.ttf")
+
+# System fonts are still used, but only for coverage this one cannot give
+# (CJK) or to check that arbitrary real-world files load. Those tests skip
+# visibly rather than returning in silence -- see `@test_skip` below.
 const FONT_DIRS = filter(isdir, [
     "/System/Library/Fonts",
     "/System/Library/Fonts/Supplemental",
@@ -51,25 +57,12 @@ function _find_font_named(stems)
     return nothing
 end
 
-# Monospace font files across platforms.
-const MONO_FILES = ["Menlo", "DejaVuSansMono", "consola", "Consolas",
-                    "LiberationMono-Regular", "Courier New", "Courier",
-                    "Monaco"]
-
 # Font files with CJK coverage.
 const CJK_FILES = ["Hiragino Sans GB", "NotoSansCJK-Regular",
                    "NotoSansCJKsc-Regular", "AppleSDGothicNeo", "msyh",
                    "simsun", "malgun"]
 
-# Proportional font files that ship a `kern` feature, used to check that
-# shaping features are actually handed to HarfBuzz.
-const KERN_FILES = ["Times New Roman", "Georgia", "Arial", "Helvetica",
-                    "DejaVuSerif", "DejaVuSans", "LiberationSerif-Regular",
-                    "times", "arial", "georgia"]
-
-_find_mono_font() = _find_font_named(MONO_FILES)
 _find_cjk_font() = _find_font_named(CJK_FILES)
-_find_kern_font() = _find_font_named(KERN_FILES)
 
 @testitem "Aqua QA" begin
     import Aqua
@@ -89,8 +82,7 @@ end
 
 @testitem "Blob from a file path" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     blob = HarfBuzz.Blob(path)
     @test blob.ptr != C_NULL
     @test length(blob) == filesize(path)
@@ -98,8 +90,7 @@ end
 
 @testitem "Blob from bytes" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     bytes = read(path)
     blob = HarfBuzz.Blob(bytes)
     @test length(blob) == length(bytes)
@@ -115,8 +106,7 @@ end
 
 @testitem "Face queries" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     face = HarfBuzz.Face(path)
     @test HarfBuzz.upem(face) > 0
     @test HarfBuzz.glyph_count(face) > 0
@@ -126,8 +116,7 @@ end
 
 @testitem "Face table access" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     face = HarfBuzz.Face(path)
     tags = HarfBuzz.table_tags(face)
     @test !isempty(tags)
@@ -142,8 +131,7 @@ end
 
 @testitem "Font from a Face shapes with native funcs" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     face = HarfBuzz.Face(path)
     font = HarfBuzz.Font(face; size = 18)
     @test HarfBuzz.scale(font) == (18 * 64, 18 * 64)
@@ -154,8 +142,7 @@ end
 
 @testitem "Font from a path" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     @test font.ptr != C_NULL
     @test HarfBuzz.scale(font) == (18 * 64, 18 * 64)
@@ -163,8 +150,7 @@ end
 
 @testitem "Font scale, ppem and ptem" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     face = HarfBuzz.Face(path)
 
     # `scale` in font units is the low-level knob; `size` is the pixel
@@ -184,8 +170,7 @@ end
 
 @testitem "Font rejects an unknown backend" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     face = HarfBuzz.Face(path)
     @test_throws ArgumentError HarfBuzz.Font(face; size = 18, funcs = :nope)
 end
@@ -201,8 +186,7 @@ end
 @testitem "FreeType backend is available once FreeType is loaded" begin
     import HarfBuzz
     import FreeType
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     face = HarfBuzz.Face(path)
     font = HarfBuzz.Font(face; size = 18, funcs = :freetype)
     @test font.ptr != C_NULL
@@ -224,30 +208,42 @@ end
     @test occursin("not a file", sprint(showerror, err))
 end
 
+@testitem "an arbitrary system font loads and shapes" begin
+    import HarfBuzz
+    # Smoke test against a real-world file rather than the vendored subset:
+    # catches anything that only works on a font we control.
+    path = Main._find_font_file()
+    if path === nothing
+        @test_skip "no system font found on this machine"
+        return
+    end
+    face = HarfBuzz.Face(path)
+    @test HarfBuzz.upem(face) > 0
+    font = HarfBuzz.Font(face; size = 18)
+    @test HarfBuzz.shape(font, "Hello") isa HarfBuzz.ShapeResult
+end
+
 # --- Shaping --------------------------------------------------------------
 
 @testitem "has_glyph for ASCII" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     @test HarfBuzz.has_glyph(font, UInt32('A'))
     @test HarfBuzz.has_glyph(font, UInt32('M'))
     @test HarfBuzz.has_glyph(font, UInt32('|'))
 end
 
-@testitem "has_glyph: monospace font lacks CJK" begin
+@testitem "has_glyph: the test font has no CJK coverage" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     @test !HarfBuzz.has_glyph(font, UInt32(0x6f22))  # 漢
 end
 
 @testitem "shape basic ASCII" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "Hello")
     @test length(result.infos) == 5
@@ -261,7 +257,10 @@ end
 @testitem "shape regional indicator pair (flag)" begin
     import HarfBuzz
     path = Main._find_cjk_font()
-    path === nothing && return
+    if path === nothing
+        @test_skip "needs a system font with CJK coverage"
+        return
+    end
     font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "🇫🇷")
     @test length(result.infos) >= 1
@@ -271,7 +270,10 @@ end
 @testitem "shape CJK" begin
     import HarfBuzz
     path = Main._find_cjk_font()
-    path === nothing && return
+    if path === nothing
+        @test_skip "needs a system font with CJK coverage"
+        return
+    end
     font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "漢字")
     # Should produce at least 1 glyph (some fonts may ligate or have
@@ -454,13 +456,36 @@ end
 
 @testitem "glyph flags are decoded" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
-    result = HarfBuzz.shape(font, "Hello")
-    # Plain Latin in a monospace font: every position is safe to break.
-    @test all(i -> !HarfBuzz.unsafe_to_break(i), result.infos)
-    @test all(i -> i.flags & ~HarfBuzz.HB_GLYPH_FLAG_DEFINED == 0, result.infos)
+    # "Hello" has no kerning pair and no ligature in the test font, so
+    # every position is safe to break.
+    plain = HarfBuzz.shape(font, "Hello")
+    @test all(i -> !HarfBuzz.unsafe_to_break(i), plain.infos)
+    @test all(i -> i.flags & ~HarfBuzz.HB_GLYPH_FLAG_DEFINED == 0, plain.infos)
+
+    # "AVA" is two kerning pairs: breaking before either V or the second A
+    # would change the result. Deterministic with the vendored font.
+    kerned = HarfBuzz.shape(font, "AVA")
+    @test length(kerned.infos) == 3
+    @test !HarfBuzz.unsafe_to_break(kerned.infos[1])
+    @test HarfBuzz.unsafe_to_break(kerned.infos[2])
+    @test HarfBuzz.unsafe_to_break(kerned.infos[3])
+end
+
+@testitem "ligatures merge clusters" begin
+    import HarfBuzz
+    path = Main.TEST_FONT
+    font = HarfBuzz.Font(path; size = 18)
+
+    # The test font ligates "ffi": six characters come back as four glyphs,
+    # and the ligature's cluster spans the three it replaced.
+    with = HarfBuzz.shape(font, "office")
+    without = HarfBuzz.shape(font, "office"; features = ["liga=0"])
+    @test length(without.infos) == 6
+    @test length(with.infos) == 4
+    @test HarfBuzz.clusters(with) == [0, 1, 4, 5]
+    @test HarfBuzz.glyph_ids(with) != HarfBuzz.glyph_ids(without)
 end
 
 @testitem "glyph flag predicates" begin
@@ -483,8 +508,7 @@ end
 
 @testitem "produce_unsafe_to_concat is accepted by shaping" begin
     import HarfBuzz
-    path = Main._find_kern_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "office")
@@ -500,8 +524,7 @@ end
 
 @testitem "serialize to text" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hi")
@@ -516,8 +539,7 @@ end
 
 @testitem "serialize to JSON" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hi")
@@ -532,8 +554,7 @@ end
 
 @testitem "serialize round-trips through deserialize" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hello")
@@ -548,8 +569,7 @@ end
 
 @testitem "serialize honours flags" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hi")
@@ -567,8 +587,7 @@ end
 
 @testitem "diff reports equality and mismatches" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
 
     a = HarfBuzz.Buffer(); HarfBuzz.add_text!(a, "Hi")
@@ -586,8 +605,7 @@ end
 
 @testitem "shape! accepts a shaper list" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hello")
@@ -654,14 +672,13 @@ end
 
 @testitem "a repeated tag over two ranges differs from either alone" begin
     import HarfBuzz
-    path = Main._find_kern_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     text = "AVAWTo"
     default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
     global_off = [p.x_advance for p in
                   HarfBuzz.shape(font, text; features = ["kern=0"]).positions]
-    default == global_off && return   # font has no kerning pairs here
+    @test default != global_off
 
     # Same tag twice over different ranges -- impossible with a Dict or a
     # NamedTuple, which is why neither is accepted.
@@ -680,8 +697,7 @@ end
 
 @testitem "shape accepts Feature values and strings" begin
     import HarfBuzz
-    path = Main._find_kern_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     text = "AVAWTo"
     default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
@@ -691,7 +707,6 @@ end
                 HarfBuzz.shape(font, text;
                                features = [HarfBuzz.Feature("kern=0")]).positions]
     @test from_str == from_obj
-    default == from_str && return   # font has no kerning pairs here
     @test default != from_str
 end
 
@@ -699,8 +714,7 @@ end
 
 @testitem "message func observes shaping stages" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hello")
@@ -717,16 +731,14 @@ end
 
 @testitem "every shaped glyph has a non-zero advance" begin
     import HarfBuzz
-    path = Main._find_mono_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "Hello")
     @test length(result.positions) == 5
-    # Reading positions with the wrong stride leaves every entry after the
-    # first at zero.
+    # Reading positions with the wrong stride left every entry after the
+    # first at zero, so the last glyph is the one that matters here.
     @test all(p -> p.x_advance > 0, result.positions)
-    # Monospace: every advance is identical.
-    @test length(unique(p.x_advance for p in result.positions)) == 1
+    @test result.positions[end].x_advance > 0
     # Plain ASCII in a horizontal run: no offsets, no vertical advance.
     @test all(p -> p.x_offset == 0 && p.y_offset == 0, result.positions)
     @test all(p -> p.y_advance == 0, result.positions)
@@ -745,23 +757,21 @@ end
 
 @testitem "disabling kerning changes advances" begin
     import HarfBuzz
-    path = Main._find_kern_font()
-    path === nothing && return
+    path = Main.TEST_FONT
     font = HarfBuzz.Font(path; size = 18)
     text = "AVAWTo"
     default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
     nokern = [p.x_advance for p in
               HarfBuzz.shape(font, text; features = ["kern" => 0]).positions]
-    # Skip if this platform's font has no kerning pairs for the sample:
-    # nothing can be concluded then.
-    default == nokern && return
     @test default != nokern
+    # Disabling kerning can only widen: every pair loses its negative
+    # adjustment.
+    @test all(nokern .>= default)
 end
 
 @testitem "a font can be destroyed without crashing" begin
     import HarfBuzz
-    path = Main._find_font_file()
-    path === nothing && return
+    path = Main.TEST_FONT
     # Run in a subprocess: passing the wrong `destroy` callback to
     # hb_ft_font_create makes hb_font_destroy jump to a garbage pointer,
     # which takes the whole process down.

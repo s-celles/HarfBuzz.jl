@@ -201,10 +201,9 @@ strings are UTF-8, and `add_codepoints!` covers decoded input),
 `hb_buffer_set_unicode_funcs`.
 
 Testing note: assertions about *which* glyphs come back unsafe to break
-are font-dependent, so the flag predicates are unit-tested on constructed
-values and the integration test only checks that no undefined bit is ever
-set. A vendored test font (open question 10) would let this be tested for
-real.
+used to be font-dependent and were therefore weakened. With the vendored
+test font (open question 10, now decided) they are real again: `"AVA"`
+yields flags `[0, 1, 1]` deterministically.
 
 ## Phase 3 — Font and face queries
 
@@ -317,6 +316,32 @@ real.
    tag or a range. Both would silently drop capability, and a caller who
    started with one would have to rewrite as soon as a range was needed.
 
+10. **Testing without system fonts.** **A subset of Noto Sans is vendored**
+    in `test/fonts/`, 25 KB, under the OFL (no Reserved Font Name, so a
+    modified subset may be redistributed). Every assertion about shaping now
+    runs against it.
+
+    28 of the 53 test items previously depended on finding a system font and
+    returned in silence when none was found — a bare CI container reported
+    the same green suite as a full workstation. Two assertions had already
+    been weakened to survive that (`unsafe_to_break`, kerning) and every
+    Phase 3 and 4 assertion would have had to be.
+
+    "Depend on an existing font JLL" was not a real option: no package in the
+    General registry ships font files (the `DejaVu` package there is a
+    CxxWrap graph library), so it would have meant creating and registering
+    one.
+
+    The subset was produced with `libharfbuzz-subset`, which the JLL already
+    ships; `test/fonts/README.md` records the source, the licence and the
+    exact script. The few tests that still need a system font (CJK coverage,
+    an arbitrary real-world file) now use `@test_skip`, so they appear in the
+    summary as *Broken* rather than vanishing.
+
+    A second font is warranted only when a phase needs coverage this one
+    cannot give: a variable font for `fvar`/`avar` in Phase 3, or a
+    COLR/CPAL font for colour in Phase 4.
+
 ## Open questions
 
 These need a decision before the corresponding work starts. Several affect
@@ -344,7 +369,3 @@ the public API and are cheapest to settle before 0.1.0 is released.
    releases. Should the package feature-detect at load time, or simply
    require a recent JLL and document the floor?
 
-10. **Testing without system fonts.** The current tests skip when no known
-    system font is found, so CI coverage varies per platform. Should the
-    package vendor a small permissively-licensed test font, or depend on an
-    existing font JLL, so that shaping tests always run?

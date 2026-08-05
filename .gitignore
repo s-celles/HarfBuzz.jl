@@ -29,6 +29,11 @@
 # 5. Tests
 !/test/*.jl
 
+#    Vendored test font and its provenance. See test/fonts/README.md.
+!/test/fonts/*.ttf
+!/test/fonts/*.txt
+!/test/fonts/*.md
+
 # 6. Documentation sources
 !/docs/Project.toml
 !/docs/make.jl

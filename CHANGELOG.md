@@ -59,6 +59,13 @@ now stands rather than a trail of intermediate API changes.
 - `ROADMAP.md`: gap analysis against the HarfBuzz C API and the official
   bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs, luaharfbuzz), phased plan,
   and open API design questions.
+- A vendored test font (`test/fonts/NotoSans-subset.ttf`, 25 KB, OFL), so
+  the suite asserts real shaping behaviour instead of skipping whenever a
+  machine lacks a given system font. Kerning, ligatures, `unsafe_to_break`
+  and missing coverage are now deterministic. The few tests that still need
+  a system font use `@test_skip`, so they show up in the summary instead of
+  passing silently. Provenance and the exact subsetting script are in
+  `test/fonts/README.md`.
 - GitHub Actions CI (Julia 1.12/1/nightly on Linux/macOS/Windows),
   CompatHelper, TagBot, and Dependabot.
 - Documentation via Documenter.jl with API reference.
