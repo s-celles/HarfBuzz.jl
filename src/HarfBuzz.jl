@@ -164,11 +164,29 @@ end
 
 # --- Shaping result -------------------------------------------------------
 
+"""
+    GlyphInfo
+
+Per-glyph output from shaping. Fields:
+
+- `glyph_id::UInt32` — glyph ID in the font.
+- `cluster::UInt32` — byte offset of the originating cluster in the
+  input UTF-8 text.
+"""
 struct GlyphInfo
     glyph_id::UInt32
     cluster::UInt32
 end
 
+"""
+    GlyphPosition
+
+Per-glyph position from shaping. All fields are in 26.6 fixed-point
+units (1/64 px). Fields:
+
+- `x_advance::Int32`, `y_advance::Int32` — advance to the next glyph.
+- `x_offset::Int32`, `y_offset::Int32` — offset from the pen position.
+"""
 struct GlyphPosition
     x_advance::Int32
     y_advance::Int32
@@ -176,6 +194,14 @@ struct GlyphPosition
     y_offset::Int32
 end
 
+"""
+    ShapeResult
+
+Result of [`shape`](@ref) / [`shape!`](@ref). Fields:
+
+- `infos::Vector{GlyphInfo}` — one entry per output glyph.
+- `positions::Vector{GlyphPosition}` — parallel to `infos`.
+"""
 struct ShapeResult
     infos::Vector{GlyphInfo}
     positions::Vector{GlyphPosition}

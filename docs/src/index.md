@@ -54,4 +54,4 @@ advances and positions. Without FreeType backing, HarfBuzz can shape
 | `has_glyph(font, cp)` | Check if font contains a Unicode codepoint |
 | `get_nominal_glyph(font, cp)` | Get glyph ID for a codepoint |
 
-See the [API](@ref) section for details.
+See the [Types](api/types.md), [Shaping](api/shaping.md), and [Font queries](api/queries.md) pages for details.
