@@ -23,15 +23,15 @@ in the same artifact and are unused.
 The package covers exactly one path: open a FreeType face, wrap it, shape a
 UTF-8 string, read glyph ids and clusters back. That path is enough for the
 original motivation (shaping text before handing glyphs to ImGui), but it is
-narrow compared to every other binding, and three defects listed below make
-parts of it silently incorrect.
+narrow compared to every other binding. The defects that made parts of it
+silently incorrect are fixed (Phase 0); the missing surface is not.
 
-## Phase 0 — Correctness (blocking)
+## Phase 0 — Correctness — **done**
 
-Three defects were confirmed against the JLL headers and by measurement.
-Each needs a failing test first, then the fix.
+Three defects were confirmed against the JLL headers and by measurement,
+then fixed test-first. A fourth problem surfaced while fixing them (0.5).
 
-### 0.1 `hb_ft_font_create` is called with one argument instead of two
+### 0.1 `hb_ft_font_create` is called with one argument instead of two — fixed
 
 `src/HarfBuzz.jl` calls
 
@@ -55,7 +55,7 @@ argument and manages the `FT_Face` lifetime itself (`FT_Reference_Face` /
 `FT_Done_Face`). The deliberate leak in `_hb_font_destroy` can then be
 removed and `hb_font_destroy` called normally.
 
-### 0.2 `_HB_GLYPH_POS_SIZE` is 24; `hb_glyph_position_t` is 20 bytes
+### 0.2 `_HB_GLYPH_POS_SIZE` is 24; `hb_glyph_position_t` is 20 bytes — fixed
 
 `hb_glyph_position_t` is four `hb_position_t` plus one `hb_var_int_t`, i.e.
 20 bytes. With a stride of 24 every glyph after the first is read at the
@@ -86,7 +86,7 @@ infos = unsafe_wrap(Array, convert(Ptr{HbGlyphInfoRaw}, info_ptr), n)
 This also gives a zero-copy view of the buffer instead of two element-wise
 copies.
 
-### 0.3 Shaping features are silently ignored
+### 0.3 Shaping features are silently ignored — fixed
 
 Features are built as `(tag, value, 0, 0)`. `start = 0, end = 0` is an empty
 range. HarfBuzz uses `HB_FEATURE_GLOBAL_START = 0` and
@@ -104,16 +104,39 @@ feature can be applied to a sub-range of the buffer.
 
 ### 0.4 Smaller correctness items
 
-- `_name_to_tag` mixes `sizeof(s)` (bytes) with `s[i]` (character indexing)
-  and does not validate length. `hb_tag_from_string` already exists.
-- The family-name branch of `HbFont` calls `FT_Set_Char_Size` on the object
-  returned by `FreeTypeAbstraction.findfont`, which is **cached and shared**;
-  this mutates global state seen by other users of FreeTypeAbstraction. The
-  return code is also ignored.
-- `add_text!` does not expose `item_offset` / `item_length`, so no context
-  can be supplied around the shaped run (needed for correct contextual forms
-  at run boundaries, e.g. Arabic).
-- `hb_buffer_allocation_successful` is never checked.
+- `_name_to_tag` mixed `sizeof(s)` (bytes) with `s[i]` (character indexing).
+  Fixed by indexing `codeunits`. `hb_tag_from_string` could replace it
+  outright in Phase 2.
+- The family-name branch of `HbFont` ignored the `FT_Set_Char_Size` return
+  code. Fixed.
+- One `FT_Library` was created per `HbFont` and never destroyed. Replaced by
+  a single module-level library created in `__init__`.
+- `add_text!` still does not expose `item_offset` / `item_length`, so no
+  context can be supplied around the shaped run (needed for correct
+  contextual forms at run boundaries, e.g. Arabic). Deferred to Phase 2.
+- `hb_buffer_allocation_successful` is still never checked. Deferred to
+  Phase 2.
+
+### 0.5 Use-after-free at process teardown — fixed
+
+Calling `hb_font_destroy` for real (0.1) exposed a second crash, at exit
+rather than during the run. `FreeTypeAbstraction.__init__` registers
+`atexit(ft_done)`, which calls `FT_Done_FreeType` and frees every face its
+library owns. Julia runs `atexit` hooks *before* the final round of
+finalizers, so an `HbFont` finalized at teardown called `FT_Done_Face` (via
+HarfBuzz's destroy callback) on freed memory — a reliable segfault at the
+end of an otherwise green test run.
+
+`HarfBuzz.__init__` now registers its own `atexit` hook setting an
+`_EXITING` flag, and `_hb_font_destroy` skips the call when it is set.
+Leaking at teardown is free; the process is exiting. `FreeTypeAbstraction`
+guards its own finalizer the same way.
+
+Note for Phase 1: this hazard exists only because the `FT_Face` is owned by
+another package's `FT_Library`. Making the native `hb-ot` path the default
+removes it. (`findfont` also opens and scores *every* font file in every
+font directory on each call, so the family-name branch is expensive as well
+as fragile.)
 
 ## Phase 1 — Object model
 

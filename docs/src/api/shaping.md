@@ -19,6 +19,21 @@ HarfBuzz.shape!
 HarfBuzz.shape
 ```
 
+## Features
+
+Features are passed as `name => value` pairs, where the name is an
+OpenType feature tag and `0` disables the feature, `1` enables it, and
+higher values select an alternate. They apply to the whole buffer.
+
+```julia
+shape(font, "AVATAR"; features = [("kern", 0)])   # no kerning
+shape(font, "office"; features = [("liga", 0)])   # no ligatures
+```
+
+```@docs
+HarfBuzz.HbFeature
+```
+
 ## Result accessors
 
 ```@docs
