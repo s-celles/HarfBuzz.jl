@@ -272,7 +272,20 @@ function shape(font::HbFont, text::AbstractString;
     return result
 end
 
+"""
+    glyph_ids(result::ShapeResult) -> Vector{UInt32}
+
+Return the glyph IDs from a `ShapeResult`.
+"""
 glyph_ids(result::ShapeResult) = [g.glyph_id for g in result.infos]
+
+"""
+    clusters(result::ShapeResult) -> Vector{UInt32}
+
+Return the cluster indices from a `ShapeResult`. Each cluster index
+corresponds to the byte offset in the original UTF-8 input string of the
+glyph sequence it belongs to.
+"""
 clusters(result::ShapeResult) = [g.cluster for g in result.infos]
 
 # --- Font queries ---------------------------------------------------------

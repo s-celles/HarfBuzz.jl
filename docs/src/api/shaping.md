@@ -25,9 +25,3 @@ HarfBuzz.shape
 HarfBuzz.glyph_ids
 HarfBuzz.clusters
 ```
-
-## Scale
-
-```@docs
-HarfBuzz.set_scale!
-```

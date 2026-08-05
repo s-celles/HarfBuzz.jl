@@ -3,8 +3,6 @@
 ## Opaque handles
 
 ```@docs
-HarfBuzz.HbBlob
-HarfBuzz.HbFace
 HarfBuzz.HbFont
 HarfBuzz.HbBuffer
 ```
@@ -20,11 +18,6 @@ HarfBuzz.ShapeResult
 ## Constructors
 
 ```@docs
-HarfBuzz.HbBlob
-HarfBuzz.HbFace(::HarfBuzz.HbBlob, ::Integer)
-HarfBuzz.HbFace(::AbstractString, ::Integer)
-HarfBuzz.HbFont(::HarfBuzz.HbFace; kwargs...)
-HarfBuzz.HbFont(::HarfBuzz.HbFace, ::Integer)
 HarfBuzz.HbFont(::AbstractString, ::Integer)
-HarfBuzz.HbBuffer
+HarfBuzz.HbBuffer()
 ```

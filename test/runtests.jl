@@ -24,6 +24,11 @@ function _find_cjk_name()
     return nothing
 end
 
+@testitem "Aqua QA" begin
+    import Aqua
+    Aqua.test_all(HarfBuzz)
+end
+
 @testitem "HbFont creation from family name" begin
     import HarfBuzz
     name = Main._find_mono_name()
