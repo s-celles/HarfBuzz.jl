@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ROADMAP.md`: gap analysis against the HarfBuzz C API and the official
+  bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs, luaharfbuzz), phased plan,
+  and open API design questions.
 - Initial package scaffold wrapping HarfBuzz via `HarfBuzz_jll`.
 - `HbBlob`, `HbFace`, `HbFont`, `HbBuffer` opaque handle types with
   automatic finalizer-based cleanup.
