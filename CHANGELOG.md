@@ -28,8 +28,13 @@ now stands rather than a trail of intermediate API changes.
 - `shape` / `shape!` — the core shaping API — returning glyph infos and
   positions. Both take a `shapers` list, selecting the backend through
   `hb_shape_full`; `shapers()` lists what this build supports.
-- Features as `Feature` values, HarfBuzz feature strings (`"kern=0"`,
-  `"-liga"`, `"aalt[3:5]=2"`) or `name => value` pairs.
+- Features in three forms: HarfBuzz feature strings (`"kern=0"`,
+  `"-liga"`, `"aalt[3:5]=2"`, the canonical and only fully expressive
+  one), `"tag" => value` pairs for the common global case, and `Feature`
+  values for programmatic construction. `Dict` and `NamedTuple` are not
+  accepted — features apply in order and a tag may repeat over different
+  ranges, which neither can represent. Unusable forms raise an
+  `ArgumentError` listing what is accepted.
 - Buffer properties: `direction`, `script`, `language`, `flags`,
   `cluster_level`, `content_type`, `replacement_codepoint`,
   `invisible_glyph`, `not_found_glyph`, and `segment_properties` for the

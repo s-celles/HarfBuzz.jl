@@ -291,17 +291,36 @@ real.
    `HarfBuzz_jll` — no extra download. It would still belong in its own
    extension, and would return a path rather than a `Font`.
 
+5. **How are features specified?** **Three forms, no `Dict`, no
+   `NamedTuple`.** HarfBuzz's own string syntax is canonical (`"kern=0"`,
+   `"-liga"`, `"aalt[3:5]=2"`) — it is the only form that expresses
+   everything, it matches `hb-shape --features` and every other binding's
+   documentation, and `hb_feature_from_string` does the parsing so there is
+   nothing to keep in sync. `"tag" => value` pairs cover the common global
+   case; `Feature` values cover programmatic construction. The `Tuple` form
+   was dropped as strictly dominated by pairs.
+
+   `Dict` and `NamedTuple` are rejected on measured grounds, not taste.
+   Features apply in order and the same tag may appear more than once over
+   different ranges (Times New Roman, `"AVAWTo"`):
+
+   ```
+   default                          [758, 684, 712, 1041, 664, 536]
+   kern=0 global                    [832, 832, 832, 1087, 704, 576]
+   kern=0 over [0:3) only           [832, 832, 832, 1087, 664, 536]
+   kern=0 [0:2) then kern=1 [2:6)   [832, 832, 786, 1041, 664, 536]
+   kern=0 then kern=1 (global)      [758, 684, 712, 1041, 664, 536]
+   kern=1 then kern=0 (global)      [832, 832, 832, 1087, 704, 576]
+   ```
+
+   A `Dict` is unordered; neither it nor a `NamedTuple` can hold a repeated
+   tag or a range. Both would silently drop capability, and a caller who
+   started with one would have to rewrite as soon as a range was needed.
+
 ## Open questions
 
 These need a decision before the corresponding work starts. Several affect
 the public API and are cheapest to settle before 0.1.0 is released.
-
-5. **How are features specified?** Today: `Vector{Tuple{String,Int}}`.
-   Alternatives: a `Dict{String,Int}` like `uharfbuzz`, HarfBuzz's own string
-   syntax via `hb_feature_from_string` (`"liga=0"`, `"+kern"`,
-   `"aalt[3:5]=2"`), or a dedicated `HbFeature` struct carrying the range.
-   The string syntax is the most portable across bindings and gets sub-range
-   support for free.
 
 6. **Zero-copy or copied results?** `unsafe_wrap` over the HarfBuzz buffer is
    fast and allocation-free, but the view is invalidated by the next

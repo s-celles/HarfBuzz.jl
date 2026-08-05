@@ -101,6 +101,7 @@ pass the resulting path.
 | `direction`, `script`, `language`, `segment_properties` | Buffer properties |
 | `flags`, `cluster_level`, `content_type` | Buffer behaviour |
 | `shape(font, text; features, shapers)` | One-shot shaping |
+| `features = ["kern=0", "liga" => 0]` | Feature strings, pairs or `Feature`s |
 | `shape!(font, buf; features, shapers)` | Shape an existing buffer |
 | `glyph_ids`, `clusters`, `px` | Result accessors |
 | `unsafe_to_break`, `unsafe_to_concat` | Where a run may be split |

@@ -11,16 +11,33 @@ HarfBuzz.shape!
 
 ## Features
 
-Features can be given as [`Feature`](@ref HarfBuzz.Feature) values,
-HarfBuzz feature strings, or `name => value` pairs — `0` disables a
+Three spellings are accepted, each with a distinct job. `0` disables a
 feature, `1` enables it, higher values select an alternate.
 
 ```julia
-HB.shape(font, "AVATAR"; features = ["kern=0"])          # no kerning
-HB.shape(font, "office"; features = ["-liga"])           # no ligatures
-HB.shape(font, "hello";  features = [("smcp", 1)])       # small caps
+# 1. HarfBuzz's own syntax -- the canonical form, and the only one that
+#    expresses everything. Same syntax as `hb-shape --features`.
+HB.shape(font, "AVATAR"; features = ["kern=0"])
+HB.shape(font, "office"; features = ["-liga"])
 HB.shape(font, "hello";  features = ["aalt[3:5]=2"])     # over a range
+
+# 2. Pairs, for the common global case.
+HB.shape(font, "hello";  features = ["smcp" => 1])
+
+# 3. `Feature` values, for features built programmatically.
+HB.shape(font, "hello";  features = [HB.Feature("aalt", 2, 3, 5)])
 ```
+
+`Dict` and `NamedTuple` are deliberately **not** accepted. Features apply
+in order — the last entry for a tag wins — and the same tag may appear
+more than once over different ranges:
+
+```julia
+HB.shape(font, text; features = ["kern[0:2]=0", "kern[2:6]=1"])
+```
+
+A `Dict` is unordered and neither it nor a `NamedTuple` can hold a
+repeated tag or a range, so both would silently drop capability.
 
 ```@docs
 HarfBuzz.Feature

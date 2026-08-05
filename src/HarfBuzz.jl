@@ -1040,11 +1040,18 @@ end
 
 Base.show(io::IO, f::Feature) = print(io, "Feature(\"", string(f), "\")")
 
-# Anything a caller may pass in `features = [...]`.
+# The three accepted spellings in `features = [...]`. Deliberately not
+# accepted: `Dict` (unordered, and HarfBuzz applies features in order,
+# last one winning for a tag) and `NamedTuple` (unique keys), because
+# neither can express a range or the same tag applied twice.
 _as_feature(f::Feature) = f
 _as_feature(s::AbstractString) = Feature(s)
-_as_feature(t::Tuple{AbstractString,Integer}) = _make_feature(t[1], t[2])
 _as_feature(p::Pair{<:AbstractString,<:Integer}) = _make_feature(p.first, p.second)
+
+_as_feature(x) = throw(ArgumentError(
+    "cannot read $(repr(x)) as a shaping feature. Pass a feature string " *
+    "(\"kern=0\", \"-liga\", \"aalt[3:5]=2\"), a \"tag\" => value pair, " *
+    "or a Feature."))
 
 """
     shape!(font::Font, buf::Buffer; features = nothing, shapers = nothing)
@@ -1052,8 +1059,8 @@ _as_feature(p::Pair{<:AbstractString,<:Integer}) = _make_feature(p.first, p.seco
 Shape the text in `buf` using `font`. Returns a `ShapeResult` with
 glyph infos and positions.
 
-`features` accepts [`Feature`](@ref) values, HarfBuzz feature strings, or
-`name => value` pairs. `shapers` restricts which backends may be tried, in
+`features` accepts HarfBuzz feature strings, `"tag" => value` pairs, or
+[`Feature`](@ref) values. `shapers` restricts which backends may be tried, in
 order; see [`shapers`](@ref) for the available names. Shaping raises an
 error when no listed shaper can handle the buffer.
 """
@@ -1102,7 +1109,7 @@ properties, shape, and return the result.
 ```julia
 result = shape(font, "Hello")
 result = shape(font, "AVATAR"; features = ["kern=0"])
-result = shape(font, "AVATAR"; features = [("kern", 0)])
+result = shape(font, "AVATAR"; features = ["kern" => 0])
 ```
 """
 function shape(font::Font, text::AbstractString;

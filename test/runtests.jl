@@ -622,6 +622,62 @@ end
     @test_throws ArgumentError HarfBuzz.Feature("!!not a feature!!")
 end
 
+@testitem "the three accepted feature forms agree" begin
+    import HarfBuzz
+    # A string, a pair and a Feature must build the same thing.
+    from_str = HarfBuzz._as_feature("kern=0")
+    from_pair = HarfBuzz._as_feature("kern" => 0)
+    from_obj = HarfBuzz._as_feature(HarfBuzz.Feature("kern=0"))
+    @test from_str == from_pair == from_obj
+
+    # Only the string form carries a range.
+    ranged = HarfBuzz._as_feature("kern[0:3]=0")
+    @test ranged.start == 0 && ranged.stop == 3
+    @test from_pair.stop == HarfBuzz.HB_FEATURE_GLOBAL_END
+end
+
+@testitem "an unusable feature form is rejected with a helpful error" begin
+    import HarfBuzz
+    # Tuples, Dicts and NamedTuples are not accepted: a Dict is unordered
+    # and none of them can express a range or a repeated tag.
+    for bad in (("kern", 0), Dict("kern" => 0), (kern = 0,), 42)
+        err = try
+            HarfBuzz._as_feature(bad)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("kern=0", sprint(showerror, err))
+    end
+end
+
+@testitem "a repeated tag over two ranges differs from either alone" begin
+    import HarfBuzz
+    path = Main._find_kern_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
+    text = "AVAWTo"
+    default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
+    global_off = [p.x_advance for p in
+                  HarfBuzz.shape(font, text; features = ["kern=0"]).positions]
+    default == global_off && return   # font has no kerning pairs here
+
+    # Same tag twice over different ranges -- impossible with a Dict or a
+    # NamedTuple, which is why neither is accepted.
+    split = [p.x_advance for p in
+             HarfBuzz.shape(font, text;
+                            features = ["kern[0:2]=0", "kern[2:6]=1"]).positions]
+    @test split != default
+    @test split != global_off
+
+    # Order matters: the last entry for a tag wins.
+    last_wins = [p.x_advance for p in
+                 HarfBuzz.shape(font, text;
+                                features = ["kern=0", "kern=1"]).positions]
+    @test last_wins == default
+end
+
 @testitem "shape accepts Feature values and strings" begin
     import HarfBuzz
     path = Main._find_kern_font()
@@ -695,7 +751,7 @@ end
     text = "AVAWTo"
     default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
     nokern = [p.x_advance for p in
-              HarfBuzz.shape(font, text; features = [("kern", 0)]).positions]
+              HarfBuzz.shape(font, text; features = ["kern" => 0]).positions]
     # Skip if this platform's font has no kerning pairs for the sample:
     # nothing can be concluded then.
     default == nokern && return
