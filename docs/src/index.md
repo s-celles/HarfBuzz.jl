@@ -1,7 +1,7 @@
 # HarfBuzz.jl
 
-A minimal Julia wrapper for the [HarfBuzz](https://harfbuzz.github.io/)
-text shaping library, built on `HarfBuzz_jll` and `FreeType.jl`.
+A Julia wrapper for the [HarfBuzz](https://harfbuzz.github.io/)
+text shaping library, built on `HarfBuzz_jll`.
 
 ## Why
 
@@ -13,45 +13,92 @@ shaping step that fills this gap.
 
 ## Quick start
 
+Nothing is exported — `Font`, `Face` and `Buffer` are too generic to put
+in your namespace — so import the module under a short alias.
+
 ```julia
-using HarfBuzz
+import HarfBuzz as HB
 
-# Open a font via FreeType (recommended — provides glyph advances)
-font = HbFont("/System/Library/Fonts/Menlo.ttc", 18)
+font = HB.Font("/System/Library/Fonts/Menlo.ttc"; size = 18)
 
-# Shape text: returns glyph IDs, clusters, and positions
-result = shape(font, "Hello 漢字 🇫🇷")
+result = HB.shape(font, "Hello 漢字 🇫🇷")
 for (info, pos) in zip(result.infos, result.positions)
-    println("glyph=$(info.glyph_id) cluster=$(info.cluster) advance=$(pos.x_advance)")
+    println("glyph=$(info.glyph_id) cluster=$(info.cluster) " *
+            "advance=$(HB.px(pos.x_advance))px")
 end
 
-# Check if a font has a glyph
-has_glyph(font, UInt32('A'))     # true
-has_glyph(font, UInt32(0x6f22))  # false — Menlo lacks CJK
+HB.has_glyph(font, UInt32('A'))     # true
+HB.has_glyph(font, UInt32(0x6f22))  # false — Menlo lacks CJK
 ```
 
-## Architecture
+## Object chain
 
 ```
-HarfBuzz.jl (Julia wrapper)
-  ├── HarfBuzz_jll (binary library)
-  ├── FreeType.jl (font loading + glyph advances)
-  └── ccall bindings to libharfbuzz
+Blob      raw bytes (a font file, or a Julia array)
+ └─ Face  the font tables inside those bytes
+     └─ Font   a face at a given size, ready to shape
 ```
 
-`HarfBuzz.jl` uses `FreeType.jl` to open font files and create
-`FT_Face` objects. HarfBuzz's `hb_ft_font_create` then wraps the
-`FT_Face` into an `hb_font_t` that can shape text and return glyph
-advances and positions. Without FreeType backing, HarfBuzz can shape
-(produce glyph IDs and clusters) but cannot provide advances.
+Each object keeps the one below it alive, so the shorthands
+`HB.Face(path)` and `HB.Font(path; size)` are safe to use on their own.
+
+```julia
+blob = HB.Blob("DejaVuSans.ttf")
+face = HB.Face(blob)            # or HB.Face(path)
+font = HB.Font(face; size = 18) # or HB.Font(path; size = 18)
+
+HB.upem(face)         # 2048
+HB.glyph_count(face)  # 6253
+HB.table_tags(face)   # ["GDEF", "GPOS", "GSUB", "OS/2", ...]
+```
+
+## Sizes and units
+
+`size` is in pixels and sets the font scale to `size * 64`, so advances
+and offsets come back in 26.6 fixed point. `HB.px` converts them.
+
+```julia
+font = HB.Font(face; size = 18)
+HB.scale(font)                                       # (1152, 1152)
+HB.px(HB.shape(font, "M").positions[1].x_advance)    # 10.84375
+```
+
+`scale` can also be set directly, in font units, which bypasses the
+pixel convenience entirely:
+
+```julia
+font = HB.Font(face; scale = (2048, 2048))
+```
+
+## Metrics backends
+
+By default HarfBuzz reads the font tables itself (`hb_ot_font_set_funcs`),
+so the package depends only on `HarfBuzz_jll`.
+
+FreeType is optional and lives behind package extensions:
+
+```julia
+using FreeType                  # loads the :freetype backend
+font = HB.Font(face; size = 18, funcs = :freetype)
+
+using FreeTypeAbstraction       # enables family-name lookup
+font = HB.Font("DejaVu Sans Mono"; size = 18)
+```
+
+Family names need a font database, which HarfBuzz does not provide; fonts
+opened that way are always FreeType-backed. Without the extension loaded,
+both calls raise an `ArgumentError` naming the package to add.
 
 ## API overview
 
-| Function | Description |
+| Call | Description |
 |---|---|
-| `HbFont(path, size)` | Open a font at `size` pixels via FreeType |
-| `shape(font, text)` | Shape text → `ShapeResult` (glyphs + positions) |
-| `has_glyph(font, cp)` | Check if font contains a Unicode codepoint |
-| `get_nominal_glyph(font, cp)` | Get glyph ID for a codepoint |
+| `HB.Blob(path)` / `HB.Blob(bytes)` | Wrap font bytes |
+| `HB.Face(blob; index)` | A face inside those bytes |
+| `HB.Font(face; size)` | A face at a size, ready to shape |
+| `HB.shape(font, text)` | Shape text → `ShapeResult` |
+| `HB.px(v)` | 26.6 fixed point → pixels |
+| `HB.has_glyph(font, cp)` | Does the font cover this codepoint? |
 
-See the [Types](api/types.md), [Shaping](api/shaping.md), and [Font queries](api/queries.md) pages for details.
+See the [Types](api/types.md), [Shaping](api/shaping.md), and
+[Font queries](api/queries.md) pages for details.

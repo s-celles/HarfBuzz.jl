@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Blob`, `Face` and the full object chain `Blob → Face → Font`, matching
+  the HarfBuzz C API and the other bindings.
+- Face queries: `upem`, `glyph_count`, `face_index`, `face_count`,
+  `table_tags`, `reference_table`, `data`.
+- Font size state: `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!`.
+- `px`, converting 26.6 fixed point to pixels.
+- `Font(face; funcs = :ot)`, HarfBuzz's own table reader, is now the
+  default source of glyph metrics; no FreeType involved.
+
+### Changed
+
+- **Breaking.** Types lose the `Hb` prefix: `HbFont` → `Font`,
+  `HbBuffer` → `Buffer`, `HbFeature` → `Feature`. Nothing is exported any
+  more — `Font`, `Face`, `Buffer` and `Blob` are too generic for a user's
+  namespace. Use `import HarfBuzz as HB`.
+- **Breaking.** `Font` takes its size as a keyword: `Font(path; size = 18)`
+  instead of `HbFont(path, 18)`. `scale = (x, y)` sets the scale directly
+  in font units.
+- **Breaking.** `FreeType` and `FreeTypeAbstraction` moved to `weakdeps`
+  behind two package extensions. The package now depends only on
+  `HarfBuzz_jll`. `funcs = :freetype` requires `using FreeType`, and
+  family-name lookup (`Font("DejaVu Sans"; size = 18)`) requires
+  `using FreeTypeAbstraction`; both raise an `ArgumentError` naming the
+  package to add when it is missing.
+- `FreeType2_jll` dropped from the dependencies; it was unused.
+
 ### Fixed
 
 - `hb_ft_font_create` was called with one argument instead of two, leaving

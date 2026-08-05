@@ -16,15 +16,15 @@ Reference points used for the gap analysis:
 
 ## Status
 
-`HarfBuzz.jl` currently binds **10 of the 508 `hb_*` symbols** exported by
+`HarfBuzz.jl` binds **34 of the 508 `hb_*` symbols** exported by
 `libharfbuzz` in the JLL. `libharfbuzz-subset` and `libharfbuzz-gobject` ship
 in the same artifact and are unused.
 
-The package covers exactly one path: open a FreeType face, wrap it, shape a
-UTF-8 string, read glyph ids and clusters back. That path is enough for the
-original motivation (shaping text before handing glyphs to ImGui), but it is
-narrow compared to every other binding. The defects that made parts of it
-silently incorrect are fixed (Phase 0); the missing surface is not.
+Phases 0 and 1 are done: the defects that made shaping silently incorrect
+are fixed, and the `Blob → Face → Font` chain is in place with HarfBuzz's own
+table reader as the default metrics source, so the package depends only on
+`HarfBuzz_jll`. What remains missing is the buffer API, the font and face
+queries, and everything beyond shaping — see the phases below.
 
 ## Phase 0 — Correctness — **done**
 
@@ -138,25 +138,35 @@ removes it. (`findfont` also opens and scores *every* font file in every
 font directory on each call, so the family-name branch is expensive as well
 as fragile.)
 
-## Phase 1 — Object model
+## Phase 1 — Object model — **done**
 
-The structural gap: there is no `Blob` and no `Face`. Every other binding
-exposes the `Blob → Face → Font` chain, and HarfBuzz can supply glyph
-metrics itself through `hb_ot_font_set_funcs` — **FreeType is optional**.
+The structural gap was that there was no `Blob` and no `Face`. Every other
+binding exposes the `Blob → Face → Font` chain, and HarfBuzz can supply
+glyph metrics itself through `hb_ot_font_set_funcs` — FreeType is optional.
+FreeType and FreeTypeAbstraction were hard dependencies, so a font could not
+be loaded from bytes in memory and tables could not be reached at all.
 
-Today FreeType and FreeTypeAbstraction are hard dependencies, which means a
-font cannot be loaded from bytes in memory, tables cannot be reached,
-variable-font instances cannot be driven properly, and the dependency
-footprint is larger than it needs to be.
+Shipped:
 
-- `HbBlob`: `hb_blob_create`, `hb_blob_create_from_file`, data access, length
-- `HbFace`: `hb_face_create(blob, index)`, `face_count`, `upem`,
-  `glyph_count`, `reference_table`, `table_tags`, `unicodes`
-- `HbFont(face)` with `hb_ot_font_set_funcs` — no FreeType involved
-- `hb_font_set_scale` / `ppem` / `ptem`, synthetic bold and slant, sub-fonts,
-  immutability
-- Move `FreeType` and `FreeTypeAbstraction` to `weakdeps` behind a package
-  extension, so the base package depends only on `HarfBuzz_jll`
+- `Blob`: `hb_blob_create_from_file_or_fail`, `hb_blob_create_or_fail` over a
+  Julia array without copying, `length`, `data`, `face_count`
+- `Face`: `hb_face_create(blob, index)`, `upem`, `glyph_count`, `face_index`,
+  `table_tags`, `reference_table`
+- `Font(face)` with `hb_ot_font_set_funcs` — the default, no FreeType
+- `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!`, and `px` for 26.6 → pixels
+- `FreeType` and `FreeTypeAbstraction` moved to `weakdeps` behind
+  `HarfBuzzFreeTypeExt` (the `funcs = :freetype` backend, over
+  `FT_New_Memory_Face` on the face's own blob) and
+  `HarfBuzzFreeTypeAbstractionExt` (family-name lookup). The package now
+  depends only on `HarfBuzz_jll`.
+- Types lost the `Hb` prefix and the module exports nothing
+
+All three paths — native, `funcs = :freetype`, and family-name lookup —
+produce identical advances on the same font and size.
+
+Deferred to Phase 3, where they sit with the rest of the font API:
+`hb_font_create_sub_font`, synthetic bold and slant, immutability,
+`face.unicodes` (needs `hb_set_t`).
 
 ## Phase 2 — Buffer API
 
@@ -224,38 +234,34 @@ footprint is larger than it needs to be.
   and [`harfbuzz-hazmat`](https://github.com/harfbuzz/harfbuzz-hazmat),
   once buffer serialisation exists
 
+## Decided
+
+1. **Type naming.** ~~Keep the `Hb` prefix?~~ **No prefix, and no exports.**
+   Types are `Font`, `Face`, `Buffer`, `Blob`, `Feature`, reached through the
+   module (`import HarfBuzz as HB`). The prefix is redundant when Julia
+   already namespaces by module, and the bare names are far too generic to
+   export.
+
+2. **Default backend.** ~~FreeType or `hb-ot`?~~ **`hb-ot` natively, by
+   default.** `funcs = :freetype` stays available through the FreeType
+   extension for callers who need FreeType's hinting and rounding. The
+   package depends only on `HarfBuzz_jll`.
+
+3. **What `size` means.** **Pixels, with raw 26.6 output.** `size = 18` sets
+   the scale to `18 * 64`; `scale = (x, y)` sets it directly in font units
+   and takes precedence. Positions stay `Int32` in 26.6 — `px` converts.
+
 ## Open questions
 
 These need a decision before the corresponding work starts. Several affect
 the public API and are cheapest to settle before 0.1.0 is released.
 
-1. **Type naming.** Keep the `Hb` prefix (`HbFont`, `HbBuffer`, `HbFace`) or
-   drop it and rely on module qualification (`HarfBuzz.Font`,
-   `HarfBuzz.Buffer`)? The prefix is redundant in Julia, but dropping it
-   makes `using HarfBuzz` export very generic names — which argues for
-   dropping the prefix *and* exporting nothing by default. This is breaking
-   after 0.1.0.
-
-2. **Is FreeType the default backend or an extension?** Phase 1 proposes
-   making `hb_ot_font_set_funcs` the default and moving FreeType behind a
-   package extension. That changes the meaning of `HbFont(path, size)` —
-   hinting, bitmap strikes, and metric rounding differ between the FreeType
-   and OT funcs. Which should `HbFont(path, size)` select? Should there be
-   an explicit `funcs = :ot | :ft` argument?
-
-3. **What does `size` mean?** `HbFont(name, size)` currently takes an integer
-   pixel size and hands it to `FT_Set_Char_Size`. With the native path the
-   caller sets `hb_font_set_scale` directly, in font units. Options: keep
-   pixels and convert, expose `scale` in font units, or accept both
-   (`HbFont(face; size_px = 18)` vs `HbFont(face; scale = (upem, upem))`).
-   Related: should positions be returned as raw 26.6 integers, or converted
-   to `Float64` pixels?
-
-4. **Does `FreeTypeAbstraction` stay a dependency at all?** It is used only
-   for `findfont` family-name resolution, it mutates shared cached state
-   (0.4 above), and font enumeration is arguably a separate concern. Options:
-   keep it in the FreeType extension, replace it with `Fontconfig_jll`, or
-   drop family-name resolution from this package entirely.
+4. **Does `FreeTypeAbstraction` stay a dependency at all?** It is now a
+   weakdep used only for family-name resolution, but `findfont` opens and
+   scores *every* font file in every font directory on each call, which is
+   slow, and font enumeration is arguably a separate concern. Options: keep
+   the extension as is, replace it with `Fontconfig_jll`, or drop
+   family-name resolution from this package entirely.
 
 5. **How are features specified?** Today: `Vector{Tuple{String,Int}}`.
    Alternatives: a `Dict{String,Int}` like `uharfbuzz`, HarfBuzz's own string

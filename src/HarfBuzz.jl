@@ -1,56 +1,272 @@
 module HarfBuzz
 
 using HarfBuzz_jll
-import FreeType
-import FreeTypeAbstraction
 
 const libhb = HarfBuzz_jll.libharfbuzz_path
 
-# Shared FreeType library handle. Initialised in `__init__` so that no
-# pointer is baked into the precompilation image.
-const _FT_LIBRARY = Ref{Ptr{FreeType.FT_LibraryRec_}}(C_NULL)
-
-# Set once the process starts shutting down. See `_hb_font_destroy`.
+# Nothing is exported: `Font`, `Face`, `Buffer` and `Blob` are far too
+# generic to put in a user's namespace. Use the module instead:
+#
+#     import HarfBuzz as HB
+#     font = HB.Font("DejaVu Sans"; size = 18)
+#
+# Set once the process starts shutting down. See `_font_destroy`.
 const _EXITING = Ref(false)
 
 function __init__()
-    lib = Ref{Ptr{FreeType.FT_LibraryRec_}}()
-    err = FreeType.FT_Init_FreeType(lib)
-    err != 0 && throw(ErrorException("FT_Init_FreeType failed: $err"))
-    _FT_LIBRARY[] = lib[]
     atexit(() -> _EXITING[] = true)
     return nothing
 end
 
-# --- Opaque pointer types ------------------------------------------------
+# --- Common helpers -------------------------------------------------------
 
-mutable struct HbFont
-    ptr::Ptr{Cvoid}
-    # FreeType face pointer (C-level). Kept for hb_ft_font_create.
-    ft_face::Ptr{FreeType.FT_FaceRec_}
-    ft_library::Ptr{FreeType.FT_LibraryRec_}
-    # Anchor: the Julia-side FTFont object from FreeTypeAbstraction.
-    # Prevents GC from collecting it (and the FT_Face it owns) while
-    # the HarfBuzz font is alive.
-    _anchor::Any
+# Pack a tag name into an `hb_tag_t`. Tags are exactly four bytes; shorter
+# names are padded with spaces, longer ones are truncated, which is what
+# `hb_tag_from_string` does.
+function _name_to_tag(name::AbstractString)::UInt32
+    bytes = codeunits(String(name))
+    len = length(bytes)
+    tag = UInt32(0)
+    for i in 1:4
+        c = i <= len ? bytes[i] : UInt8(' ')
+        tag = (tag << 8) | UInt32(c)
+    end
+    return tag
 end
 
-mutable struct HbBuffer
-    ptr::Ptr{Cvoid}
+function _tag_to_name(tag::UInt32)::String
+    buf = Vector{UInt8}(undef, 5)
+    ccall((:hb_tag_to_string, libhb), Cvoid, (UInt32, Ptr{UInt8}), tag, buf)
+    return String(buf[1:4])
 end
 
-# --- Reference counting ---------------------------------------------------
+"""
+    px(v) -> Float64
 
-function _hb_font_destroy(f::HbFont)
-    # `hb_ft_font_create_referenced` installed FT_Done_Face as the
-    # destroy callback, so this also releases the reference taken on the
-    # FT_Face.
-    #
-    # Skip it at process teardown: Julia runs atexit hooks before the
-    # final round of finalizers, and FreeTypeAbstraction's hook calls
-    # FT_Done_FreeType, which frees every face its library owns. Calling
-    # FT_Done_Face afterwards is a use-after-free. Leaking here costs
-    # nothing -- the process is exiting.
+Convert a 26.6 fixed-point value -- the unit of every advance and offset
+in a [`ShapeResult`](@ref) -- to pixels.
+
+```julia
+px(694)   # 10.84375
+```
+"""
+px(v::Integer) = Float64(v) / 64
+
+# --- Blob -----------------------------------------------------------------
+
+"""
+    Blob(path::AbstractString)
+    Blob(data::AbstractVector{UInt8})
+
+A chunk of binary data, usually the contents of a font file. `Blob` is the
+bottom of HarfBuzz's object chain: a [`Face`](@ref) is created from a blob,
+and a [`Font`](@ref) from a face.
+
+Creating a blob from a Julia array does not copy it; the array is kept
+alive by the blob.
+"""
+mutable struct Blob
+    ptr::Ptr{Cvoid}
+    # Anchor for Julia-owned bytes handed to HarfBuzz as READONLY.
+    _data::Any
+end
+
+function _blob_destroy(b::Blob)
+    b.ptr == C_NULL || ccall((:hb_blob_destroy, libhb), Cvoid, (Ptr{Cvoid},), b.ptr)
+    b.ptr = C_NULL
+    nothing
+end
+
+function Blob(path::AbstractString)
+    ptr = ccall((:hb_blob_create_from_file_or_fail, libhb),
+                Ptr{Cvoid}, (Cstring,), String(path))
+    ptr == C_NULL && throw(ErrorException("cannot read font file: $path"))
+    blob = Blob(ptr, nothing)
+    finalizer(_blob_destroy, blob)
+    return blob
+end
+
+const _HB_MEMORY_MODE_READONLY = Cint(1)
+
+function Blob(data::AbstractVector{UInt8})
+    bytes = data isa Vector{UInt8} ? data : collect(data)
+    ptr = GC.@preserve bytes ccall(
+        (:hb_blob_create_or_fail, libhb), Ptr{Cvoid},
+        (Ptr{UInt8}, Cuint, Cint, Ptr{Cvoid}, Ptr{Cvoid}),
+        pointer(bytes), Cuint(length(bytes)), _HB_MEMORY_MODE_READONLY,
+        C_NULL, C_NULL)
+    ptr == C_NULL && throw(ErrorException("hb_blob_create_or_fail failed"))
+    blob = Blob(ptr, bytes)
+    finalizer(_blob_destroy, blob)
+    return blob
+end
+
+# `length(blob)` is the blob's size in bytes.
+Base.length(b::Blob)::Int =
+    Int(ccall((:hb_blob_get_length, libhb), Cuint, (Ptr{Cvoid},), b.ptr))
+
+Base.isempty(b::Blob) = length(b) == 0
+
+"""
+    data(blob::Blob) -> Vector{UInt8}
+
+Copy the blob's contents into a Julia array.
+"""
+function data(b::Blob)::Vector{UInt8}
+    len = Ref{Cuint}(0)
+    ptr = ccall((:hb_blob_get_data, libhb), Ptr{UInt8},
+                (Ptr{Cvoid}, Ref{Cuint}), b.ptr, len)
+    ptr == C_NULL && return UInt8[]
+    return copy(unsafe_wrap(Array, ptr, Int(len[])))
+end
+
+"""
+    face_count(blob::Blob) -> Int
+
+Number of faces in the font file the blob holds. Greater than one for a
+TrueType Collection (`.ttc`).
+"""
+face_count(b::Blob)::Int =
+    Int(ccall((:hb_face_count, libhb), Cuint, (Ptr{Cvoid},), b.ptr))
+
+# --- Face -----------------------------------------------------------------
+
+"""
+    Face(blob::Blob; index::Integer = 0)
+    Face(path::AbstractString; index::Integer = 0)
+
+A font face: the tables of one font inside a [`Blob`](@ref). `index`
+selects the face inside a TrueType Collection.
+
+A face carries no size; combine it with a size to get a [`Font`](@ref).
+"""
+mutable struct Face
+    ptr::Ptr{Cvoid}
+    # Anchor: the blob owns the bytes the face reads from.
+    _blob::Any
+end
+
+function _face_destroy(f::Face)
+    f.ptr == C_NULL || ccall((:hb_face_destroy, libhb), Cvoid, (Ptr{Cvoid},), f.ptr)
+    f.ptr = C_NULL
+    nothing
+end
+
+function Face(blob::Blob; index::Integer = 0)
+    ptr = ccall((:hb_face_create, libhb), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cuint), blob.ptr, Cuint(index))
+    ptr == C_NULL && throw(ErrorException("hb_face_create failed"))
+    face = Face(ptr, blob)
+    finalizer(_face_destroy, face)
+    return face
+end
+
+Face(path::AbstractString; index::Integer = 0) = Face(Blob(path); index = index)
+
+"""
+    upem(face::Face) -> Int
+
+Units per em: the design grid the face's outlines are expressed in,
+typically 1000 (CFF) or 2048 (TrueType).
+"""
+upem(f::Face)::Int =
+    Int(ccall((:hb_face_get_upem, libhb), Cuint, (Ptr{Cvoid},), f.ptr))
+
+"""
+    glyph_count(face::Face) -> Int
+
+Number of glyphs in the face.
+"""
+glyph_count(f::Face)::Int =
+    Int(ccall((:hb_face_get_glyph_count, libhb), Cuint, (Ptr{Cvoid},), f.ptr))
+
+"""
+    face_index(face::Face) -> Int
+
+Index of this face inside its collection.
+"""
+face_index(f::Face)::Int =
+    Int(ccall((:hb_face_get_index, libhb), Cuint, (Ptr{Cvoid},), f.ptr))
+
+"""
+    table_tags(face::Face) -> Vector{String}
+
+The four-character tags of every table in the face, e.g. `"cmap"`,
+`"GSUB"`, `"glyf"`.
+"""
+function table_tags(f::Face)::Vector{String}
+    tags = String[]
+    offset = Cuint(0)
+    buf = Vector{UInt32}(undef, 32)
+    while true
+        count = Ref{Cuint}(length(buf))
+        total = ccall((:hb_face_get_table_tags, libhb), Cuint,
+                      (Ptr{Cvoid}, Cuint, Ref{Cuint}, Ptr{UInt32}),
+                      f.ptr, offset, count, buf)
+        n = Int(count[])
+        n == 0 && break
+        append!(tags, _tag_to_name(buf[i]) for i in 1:n)
+        offset += Cuint(n)
+        offset >= total && break
+    end
+    return tags
+end
+
+"""
+    reference_table(face::Face, tag::AbstractString) -> Blob
+
+The raw bytes of one table, as a blob. A table the face does not have
+yields an empty blob rather than an error.
+"""
+function reference_table(f::Face, tag::AbstractString)::Blob
+    ptr = ccall((:hb_face_reference_table, libhb), Ptr{Cvoid},
+                (Ptr{Cvoid}, UInt32), f.ptr, _name_to_tag(tag))
+    ptr == C_NULL && throw(ErrorException("hb_face_reference_table failed"))
+    blob = Blob(ptr, nothing)
+    finalizer(_blob_destroy, blob)
+    return blob
+end
+
+# --- Font -----------------------------------------------------------------
+
+"""
+    Font(face::Face; size = nothing, scale = nothing, funcs = :ot)
+    Font(path::AbstractString; size, index = 0, funcs = :ot)
+    Font(family::AbstractString; size)
+
+A face at a given size, ready to shape.
+
+`size` is in pixels and sets the scale to `size * 64`, so advances and
+offsets come back in 26.6 fixed point; use [`px`](@ref) to convert them.
+`scale` sets the scale directly, in font units, and takes precedence.
+
+`funcs` selects where glyph metrics come from:
+
+- `:ot` (default) -- HarfBuzz reads the font tables itself. No FreeType.
+- `:freetype` -- metrics come from FreeType, matching its hinting and
+  rounding. Requires `using FreeType`, which loads the extension.
+
+Passing a family name rather than a path requires
+`using FreeTypeAbstraction`; such fonts are always FreeType-backed.
+
+```julia
+font = Font("/System/Library/Fonts/Menlo.ttc"; size = 18)
+font = Font(face; scale = (2048, 2048))
+```
+"""
+mutable struct Font
+    ptr::Ptr{Cvoid}
+    # Anchors: whatever the hb_font_t reads from must outlive it.
+    _face::Any
+    _backing::Any
+end
+
+function _font_destroy(f::Font)
+    # Skip destruction at process teardown. Julia runs atexit hooks before
+    # the final round of finalizers, and FreeTypeAbstraction's hook calls
+    # FT_Done_FreeType, which frees every face its library owns. A
+    # FreeType-backed hb_font_t would then call FT_Done_Face on freed
+    # memory. Leaking here costs nothing -- the process is exiting.
     if f.ptr != C_NULL && !_EXITING[]
         ccall((:hb_font_destroy, libhb), Cvoid, (Ptr{Cvoid},), f.ptr)
     end
@@ -58,123 +274,164 @@ function _hb_font_destroy(f::HbFont)
     nothing
 end
 
-function _hb_buffer_destroy(b::HbBuffer)
+Font(face::Face; size = nothing, scale = nothing, funcs::Symbol = :ot) =
+    _create_font(Val(funcs), face, size, scale)
+
+# Backends apply this once the hb_font_t exists: an explicit `scale` wins,
+# otherwise `size` pixels become 26.6 fixed point.
+function _apply_scale!(font::Font, size, scale)
+    if scale !== nothing
+        scale!(font, scale)
+    elseif size !== nothing
+        s = round(Int, size * 64)
+        scale!(font, (s, s))
+    end
+    return font
+end
+
+# Pixel size a backend should open its own face at.
+_size_px(size, scale) =
+    size !== nothing ? Float64(size) :
+    scale !== nothing ? Float64(scale[1]) / 64 : 18.0
+
+function Font(name::AbstractString; size = nothing, scale = nothing,
+              index::Integer = 0, funcs::Symbol = :ot)
+    if isfile(String(name))
+        return Font(Face(String(name); index = index);
+                    size = size, scale = scale, funcs = funcs)
+    end
+    return _resolve_family(String(name); size = size, scale = scale)
+end
+
+# `_create_font(::Val{:freetype}, ...)` is added by the FreeType
+# extension; this is the fallback for every other backend name.
+function _create_font(::Val{S}, ::Face, size, scale) where {S}
+    S === :freetype && throw(ArgumentError(
+        "the :freetype backend requires FreeType; add `using FreeType`"))
+    throw(ArgumentError("unknown font funcs: :$S (expected :ot or :freetype)"))
+end
+
+function _create_font(::Val{:ot}, face::Face, size, scale)
+    ptr = ccall((:hb_font_create, libhb), Ptr{Cvoid}, (Ptr{Cvoid},), face.ptr)
+    ptr == C_NULL && throw(ErrorException("hb_font_create failed"))
+    ccall((:hb_ot_font_set_funcs, libhb), Cvoid, (Ptr{Cvoid},), ptr)
+    font = Font(ptr, face, nothing)
+    finalizer(_font_destroy, font)
+    return _apply_scale!(font, size, scale)
+end
+
+# Set by the FreeTypeAbstraction extension. Resolving a family name needs
+# a font database, which HarfBuzz does not provide.
+const _FAMILY_RESOLVER = Ref{Any}(nothing)
+
+function _resolve_family(name::AbstractString; kwargs...)
+    resolver = _FAMILY_RESOLVER[]
+    resolver === nothing && throw(ArgumentError(
+        "'$name' is not a file, and resolving font family names requires " *
+        "a font database; add `using FreeTypeAbstraction`"))
+    return resolver(name; kwargs...)
+end
+
+"""
+    scale(font::Font) -> Tuple{Int,Int}
+    scale!(font::Font, (x, y))
+
+Get or set the horizontal and vertical scale, in font units. Shaping
+output is expressed in these units.
+"""
+function scale(f::Font)::Tuple{Int,Int}
+    x = Ref{Cint}(0)
+    y = Ref{Cint}(0)
+    ccall((:hb_font_get_scale, libhb), Cvoid,
+          (Ptr{Cvoid}, Ref{Cint}, Ref{Cint}), f.ptr, x, y)
+    return (Int(x[]), Int(y[]))
+end
+
+function scale!(f::Font, xy::Tuple{Integer,Integer})::Font
+    ccall((:hb_font_set_scale, libhb), Cvoid,
+          (Ptr{Cvoid}, Cint, Cint), f.ptr, Cint(xy[1]), Cint(xy[2]))
+    return f
+end
+
+"""
+    ppem(font::Font) -> Tuple{Int,Int}
+    ppem!(font::Font, (x, y))
+
+Get or set the horizontal and vertical pixels-per-em, used by fonts that
+carry bitmap strikes or size-specific hinting.
+"""
+function ppem(f::Font)::Tuple{Int,Int}
+    x = Ref{Cuint}(0)
+    y = Ref{Cuint}(0)
+    ccall((:hb_font_get_ppem, libhb), Cvoid,
+          (Ptr{Cvoid}, Ref{Cuint}, Ref{Cuint}), f.ptr, x, y)
+    return (Int(x[]), Int(y[]))
+end
+
+function ppem!(f::Font, xy::Tuple{Integer,Integer})::Font
+    ccall((:hb_font_set_ppem, libhb), Cvoid,
+          (Ptr{Cvoid}, Cuint, Cuint), f.ptr, Cuint(xy[1]), Cuint(xy[2]))
+    return f
+end
+
+"""
+    ptem(font::Font) -> Float64
+    ptem!(font::Font, points)
+
+Get or set the point size, which fonts with an optical size axis use to
+pick an optical variant. Zero means unset.
+"""
+ptem(f::Font)::Float64 =
+    Float64(ccall((:hb_font_get_ptem, libhb), Cfloat, (Ptr{Cvoid},), f.ptr))
+
+function ptem!(f::Font, points::Real)::Font
+    ccall((:hb_font_set_ptem, libhb), Cvoid,
+          (Ptr{Cvoid}, Cfloat), f.ptr, Cfloat(points))
+    return f
+end
+
+# --- Buffer ---------------------------------------------------------------
+
+"""
+    Buffer()
+
+Create an empty buffer. Add text with [`add_text!`](@ref), then call
+[`shape!`](@ref).
+"""
+mutable struct Buffer
+    ptr::Ptr{Cvoid}
+end
+
+function _buffer_destroy(b::Buffer)
     b.ptr == C_NULL || ccall((:hb_buffer_destroy, libhb), Cvoid, (Ptr{Cvoid},), b.ptr)
     b.ptr = C_NULL
     nothing
 end
 
-# --- hb_font_t ------------------------------------------------------------
-
-"""
-    HbFont(name::AbstractString, size::Integer; index::Integer=0)
-
-Open a font for HarfBuzz shaping. `name` is either a path to a font
-file or a font family name:
-
-- If `name` is an existing file path, the font is opened directly via
-  FreeType. `index` selects the face inside a TTC (TrueType
-  Collection).
-- Otherwise `name` is treated as a family name and resolved
-  cross-platform via `FreeTypeAbstraction.findfont` (e.g. `"Menlo"`,
-  `"DejaVu Sans Mono"`, `"Consolas"`). `index` is ignored in this
-  branch.
-
-The font is opened at `size` pixels.
-
-```julia
-font = HbFont("/System/Library/Fonts/Menlo.ttc", 18)
-font = HbFont("Menlo", 18)
-```
-"""
-function HbFont(name::AbstractString, size::Integer; index::Integer = 0)::HbFont
-    if isfile(String(name))
-        # --- Path branch: open the file directly via FreeType ---------
-        # FT_New_Face writes a `FT_Face` (== Ptr{__JL_FT_FaceRec_})
-        # into the ref; the HbFont.ft_face field (Ptr{FT_FaceRec_})
-        # accepts it via the usual pointer reinterpretation.
-        face_ref = Ref{FreeType.FT_Face}()
-        err = FreeType.FT_New_Face(_FT_LIBRARY[], String(name),
-                                   Clong(index), face_ref)
-        err != 0 && throw(ErrorException(
-            "FT_New_Face failed for $name: $err"))
-        ft_face = face_ref[]
-
-        char_size = Int(size) * 64
-        err = FreeType.FT_Set_Char_Size(ft_face, 0, char_size, 0, 0)
-        if err != 0
-            FreeType.FT_Done_Face(ft_face)
-            throw(ErrorException("FT_Set_Char_Size failed: $err"))
-        end
-
-        # `_referenced` takes its own reference on the FT_Face and
-        # installs FT_Done_Face as the destroy callback, so the face
-        # outlives this scope and is released with the hb_font_t.
-        ptr = ccall((:hb_ft_font_create_referenced, libhb),
-                    Ptr{Cvoid}, (Ptr{Cvoid},), ft_face)
-        if ptr == C_NULL
-            FreeType.FT_Done_Face(ft_face)
-            throw(ErrorException("hb_ft_font_create_referenced failed"))
-        end
-        # Drop the reference taken by FT_New_Face; HarfBuzz holds the
-        # remaining one.
-        FreeType.FT_Done_Face(ft_face)
-
-        font = HbFont(ptr, ft_face, _FT_LIBRARY[], nothing)
-        finalizer(_hb_font_destroy, font)
-        return font
-    else
-        # --- Family branch: resolve via FreeTypeAbstraction -----------
-        ftfont = FreeTypeAbstraction.findfont(String(name))
-        ftfont === nothing && throw(ErrorException(
-            "font not found: '$name'. Searched paths: " *
-            join(FreeTypeAbstraction.fontpaths(), ", ")))
-        char_size = Int(size) * 64
-        err = FreeType.FT_Set_Char_Size(ftfont, 0, char_size, 0, 0)
-        err != 0 && throw(ErrorException("FT_Set_Char_Size failed: $err"))
-        # The FT_Face belongs to FreeTypeAbstraction's cache, so only the
-        # reference taken here is released on destruction.
-        ptr = ccall((:hb_ft_font_create_referenced, libhb),
-                    Ptr{Cvoid}, (Ptr{Cvoid},), ftfont.ft_ptr)
-        ptr == C_NULL && throw(ErrorException(
-            "hb_ft_font_create_referenced failed"))
-        font = HbFont(ptr, ftfont.ft_ptr, C_NULL, ftfont)
-        finalizer(_hb_font_destroy, font)
-        return font
-    end
-end
-
-# --- hb_buffer_t ----------------------------------------------------------
-
-"""
-    HbBuffer()
-
-Create an empty buffer. Add text with `add_text!`, then call `shape!`.
-"""
-function HbBuffer()::HbBuffer
+function Buffer()::Buffer
     ptr = ccall((:hb_buffer_create, libhb), Ptr{Cvoid}, ())
     ptr == C_NULL && throw(ErrorException("hb_buffer_create failed"))
-    buf = HbBuffer(ptr)
-    finalizer(_hb_buffer_destroy, buf)
+    buf = Buffer(ptr)
+    finalizer(_buffer_destroy, buf)
     return buf
 end
 
 """
-    clear!(buf::HbBuffer)
+    clear!(buf::Buffer)
 
 Reset the buffer to empty, discarding all content and state.
 """
-function clear!(buf::HbBuffer)::Nothing
+function clear!(buf::Buffer)::Nothing
     ccall((:hb_buffer_clear_contents, libhb), Cvoid, (Ptr{Cvoid},), buf.ptr)
     return nothing
 end
 
 """
-    add_text!(buf::HbBuffer, text::AbstractString)
+    add_text!(buf::Buffer, text::AbstractString)
 
 Add UTF-8 text to the buffer.
 """
-function add_text!(buf::HbBuffer, text::AbstractString)::Nothing
+function add_text!(buf::Buffer, text::AbstractString)::Nothing
     bytes = codeunits(String(text))
     n = length(bytes)
     GC.@preserve bytes begin
@@ -186,12 +443,12 @@ function add_text!(buf::HbBuffer, text::AbstractString)::Nothing
 end
 
 """
-    guess_segment_properties!(buf::HbBuffer)
+    guess_segment_properties!(buf::Buffer)
 
 Ask HarfBuzz to guess script, language and direction from the buffer
 content.
 """
-function guess_segment_properties!(buf::HbBuffer)::Nothing
+function guess_segment_properties!(buf::Buffer)::Nothing
     ccall((:hb_buffer_guess_segment_properties, libhb), Cvoid,
           (Ptr{Cvoid},), buf.ptr)
     return nothing
@@ -216,8 +473,9 @@ end
 """
     GlyphPosition
 
-Per-glyph position from shaping. All fields are in 26.6 fixed-point
-units (1/64 px). Fields:
+Per-glyph position from shaping. All fields are in the font's scale units,
+which [`Font`](@ref)'s `size` argument sets to 26.6 fixed point (1/64 px);
+convert with [`px`](@ref). Fields:
 
 - `x_advance::Int32`, `y_advance::Int32` — advance to the next glyph.
 - `x_offset::Int32`, `y_offset::Int32` — offset from the pen position.
@@ -262,13 +520,13 @@ struct _HbGlyphPositionRaw
 end
 
 """
-    HbFeature
+    Feature
 
 An OpenType feature to apply while shaping: a 4-byte `tag`, a `value`
 (0 disables, 1 enables, higher values select an alternate), and the
 half-open buffer range `[start, stop)` it applies to.
 """
-struct HbFeature
+struct Feature
     tag::UInt32
     value::UInt32
     start::UInt32
@@ -281,16 +539,16 @@ const HB_FEATURE_GLOBAL_START = UInt32(0)
 const HB_FEATURE_GLOBAL_END = typemax(UInt32)
 
 _make_feature(name::AbstractString, value::Integer) =
-    HbFeature(_name_to_tag(name), UInt32(value),
-              HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END)
+    Feature(_name_to_tag(name), UInt32(value),
+            HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END)
 
 """
-    shape!(font::HbFont, buf::HbBuffer; features=nothing)
+    shape!(font::Font, buf::Buffer; features=nothing)
 
 Shape the text in `buf` using `font`. Returns a `ShapeResult` with
 glyph infos and positions.
 """
-function shape!(font::HbFont, buf::HbBuffer;
+function shape!(font::Font, buf::Buffer;
                 features::Union{Nothing,Vector{Tuple{String,Int}}} = nothing)::ShapeResult
     if features === nothing
         ccall((:hb_shape, libhb), Cvoid,
@@ -330,22 +588,8 @@ function shape!(font::HbFont, buf::HbBuffer;
     return ShapeResult(infos, positions)
 end
 
-# Pack a feature name into an `hb_tag_t`. Tags are exactly four bytes;
-# shorter names are padded with spaces, longer ones are truncated, which
-# is what `hb_tag_from_string` does.
-function _name_to_tag(name::AbstractString)::UInt32
-    bytes = codeunits(String(name))
-    len = length(bytes)
-    tag = UInt32(0)
-    for i in 1:4
-        c = i <= len ? bytes[i] : UInt8(' ')
-        tag = (tag << 8) | UInt32(c)
-    end
-    return tag
-end
-
 """
-    shape(font::HbFont, text::AbstractString; features=nothing) -> ShapeResult
+    shape(font::Font, text::AbstractString; features=nothing) -> ShapeResult
 
 One-shot convenience: create a buffer, add text, guess segment
 properties, shape, and return the result.
@@ -355,9 +599,9 @@ result = shape(font, "Hello")
 result = shape(font, "AVATAR"; features = [("kern", 0)])
 ```
 """
-function shape(font::HbFont, text::AbstractString;
+function shape(font::Font, text::AbstractString;
                features::Union{Nothing,Vector{Tuple{String,Int}}} = nothing)::ShapeResult
-    buf = HbBuffer()
+    buf = Buffer()
     add_text!(buf, text)
     guess_segment_properties!(buf)
     result = shape!(font, buf; features = features)
@@ -383,12 +627,12 @@ clusters(result::ShapeResult) = [g.cluster for g in result.infos]
 # --- Font queries ---------------------------------------------------------
 
 """
-    get_nominal_glyph(font::HbFont, unicode::UInt32) -> UInt32
+    get_nominal_glyph(font::Font, unicode::UInt32) -> UInt32
 
 Return the glyph ID for a Unicode codepoint, or 0 if the font does
 not contain it.
 """
-function get_nominal_glyph(font::HbFont, unicode::UInt32)::UInt32
+function get_nominal_glyph(font::Font, unicode::UInt32)::UInt32
     glyph = Ref{UInt32}(0)
     found = ccall((:hb_font_get_glyph, libhb), Cint,
                   (Ptr{Cvoid}, UInt32, UInt32, Ref{UInt32}),
@@ -397,16 +641,10 @@ function get_nominal_glyph(font::HbFont, unicode::UInt32)::UInt32
 end
 
 """
-    has_glyph(font::HbFont, unicode::UInt32) -> Bool
+    has_glyph(font::Font, unicode::UInt32) -> Bool
 
 True if the font contains a glyph for `unicode`.
 """
-has_glyph(font::HbFont, unicode::UInt32)::Bool = get_nominal_glyph(font, unicode) != 0
-
-export HbFont, HbBuffer,
-       GlyphInfo, GlyphPosition, ShapeResult,
-       clear!, add_text!, guess_segment_properties!,
-       shape!, shape, glyph_ids, clusters,
-       get_nominal_glyph, has_glyph
+has_glyph(font::Font, unicode::UInt32)::Bool = get_nominal_glyph(font, unicode) != 0
 
 end # module

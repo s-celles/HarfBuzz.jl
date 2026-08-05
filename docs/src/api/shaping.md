@@ -26,12 +26,8 @@ OpenType feature tag and `0` disables the feature, `1` enables it, and
 higher values select an alternate. They apply to the whole buffer.
 
 ```julia
-shape(font, "AVATAR"; features = [("kern", 0)])   # no kerning
-shape(font, "office"; features = [("liga", 0)])   # no ligatures
-```
-
-```@docs
-HarfBuzz.HbFeature
+HB.shape(font, "AVATAR"; features = [("kern", 0)])   # no kerning
+HB.shape(font, "office"; features = [("liga", 0)])   # no ligatures
 ```
 
 ## Result accessors
@@ -39,4 +35,5 @@ HarfBuzz.HbFeature
 ```@docs
 HarfBuzz.glyph_ids
 HarfBuzz.clusters
+HarfBuzz.px
 ```
