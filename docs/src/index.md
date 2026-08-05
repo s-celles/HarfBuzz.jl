@@ -75,19 +75,35 @@ font = HB.Font(face; scale = (2048, 2048))
 By default HarfBuzz reads the font tables itself (`hb_ot_font_set_funcs`),
 so the package depends only on `HarfBuzz_jll`.
 
-FreeType is optional and lives behind package extensions:
+FreeType is optional and lives behind a package extension:
 
 ```julia
 using FreeType                  # loads the :freetype backend
 font = HB.Font(face; size = 18, funcs = :freetype)
-
-using FreeTypeAbstraction       # enables family-name lookup
-font = HB.Font("DejaVu Sans Mono"; size = 18)
 ```
 
-Family names need a font database, which HarfBuzz does not provide; fonts
-opened that way are always FreeType-backed. Without the extension loaded,
-both calls raise an `ArgumentError` naming the package to add.
+Without it, `funcs = :freetype` raises an `ArgumentError` naming the
+package to add.
+
+## Finding a font file
+
+This package matches no font names. HarfBuzz has no font database, and
+neither do the other bindings — `uharfbuzz`, `harfbuzz_rs` and
+`harfbuzzjs` all take bytes or a path. Resolve the family name with a
+tool built for it, then pass the path:
+
+```julia
+import HarfBuzz as HB
+
+font = HB.Font("/System/Library/Fonts/Menlo.ttc"; size = 18)
+```
+
+Passing anything that is not a file raises an `ArgumentError` saying so.
+
+Keeping matching out of the package also keeps it honest about cost: a
+family lookup means opening and scoring every font file on the machine
+unless the matcher caches, which is not something a shaping call should
+do behind your back.
 
 ## API overview
 

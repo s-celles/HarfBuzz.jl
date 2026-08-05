@@ -1,8 +1,8 @@
 using TestItemRunner
-import FreeTypeAbstraction
 
-# Directories that hold font files on the supported platforms. Tests that
-# need a real font skip when none is found -- see ROADMAP open question 10.
+# The package resolves no font names: tests locate font *files* by
+# filename. Anything not found here is skipped, so a machine without a
+# given font never fails the suite -- see ROADMAP open question 10.
 const FONT_DIRS = filter(isdir, [
     "/System/Library/Fonts",
     "/System/Library/Fonts/Supplemental",
@@ -32,41 +32,44 @@ function _find_font_file()
     return nothing
 end
 
-# Common monospace font family names across platforms
-const MONO_NAMES = ["Menlo", "DejaVu Sans Mono", "Consolas",
-                    "Liberation Mono", "Courier New", "Monaco"]
-
-# Common CJK font family names across platforms
-const CJK_NAMES = ["Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans CJK",
-                   "Microsoft YaHei", "SimSun", "AppleSDGothicNeo",
-                   "Malgun Gothic"]
-
-function _find_mono_name()
-    for name in MONO_NAMES
-        FreeTypeAbstraction.findfont(name) === nothing || return name
+"""
+Path of the first font file whose name matches one of `stems`, comparing
+case-insensitively and ignoring spaces, hyphens and underscores.
+"""
+function _find_font_named(stems)
+    norm(s) = replace(lowercase(s), r"[ _-]" => "")
+    wanted = norm.(stems)
+    for dir in FONT_DIRS
+        for (root, _, files) in walkdir(dir; onerror = _ -> nothing)
+            for f in sort(files)
+                any(endswith(lowercase(f), e) for e in FONT_EXTS) || continue
+                base = norm(splitext(f)[1])
+                any(w -> base == w, wanted) && return joinpath(root, f)
+            end
+        end
     end
     return nothing
 end
 
-function _find_cjk_name()
-    for name in CJK_NAMES
-        FreeTypeAbstraction.findfont(name) === nothing || return name
-    end
-    return nothing
-end
+# Monospace font files across platforms.
+const MONO_FILES = ["Menlo", "DejaVuSansMono", "consola", "Consolas",
+                    "LiberationMono-Regular", "Courier New", "Courier",
+                    "Monaco"]
 
-# Proportional families that ship a `kern` feature, used to check that
+# Font files with CJK coverage.
+const CJK_FILES = ["Hiragino Sans GB", "NotoSansCJK-Regular",
+                   "NotoSansCJKsc-Regular", "AppleSDGothicNeo", "msyh",
+                   "simsun", "malgun"]
+
+# Proportional font files that ship a `kern` feature, used to check that
 # shaping features are actually handed to HarfBuzz.
-const KERN_NAMES = ["Times New Roman", "Georgia", "Arial", "Helvetica",
-                    "DejaVu Serif", "DejaVu Sans", "Liberation Serif",
-                    "Liberation Sans"]
+const KERN_FILES = ["Times New Roman", "Georgia", "Arial", "Helvetica",
+                    "DejaVuSerif", "DejaVuSans", "LiberationSerif-Regular",
+                    "times", "arial", "georgia"]
 
-function _find_kern_name()
-    for name in KERN_NAMES
-        FreeTypeAbstraction.findfont(name) === nothing || return name
-    end
-    return nothing
-end
+_find_mono_font() = _find_font_named(MONO_FILES)
+_find_cjk_font() = _find_font_named(CJK_FILES)
+_find_kern_font() = _find_font_named(KERN_FILES)
 
 @testitem "Aqua QA" begin
     import Aqua
@@ -207,29 +210,27 @@ end
     @test all(p -> p.x_advance != 0, result.positions)
 end
 
-@testitem "family names resolve once FreeTypeAbstraction is loaded" begin
+@testitem "a Font name that is not a file is rejected" begin
     import HarfBuzz
-    import FreeTypeAbstraction
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
-    @test font.ptr != C_NULL
-    @test HarfBuzz.has_glyph(font, UInt32('A'))
-end
-
-@testitem "an unresolvable family name fails" begin
-    import HarfBuzz
-    import FreeTypeAbstraction
-    @test_throws ErrorException HarfBuzz.Font("NoSuchFontFamilyName"; size = 18)
+    # The package matches no font names: HarfBuzz has no font database and
+    # neither does this wrapper. The error must say so.
+    err = try
+        HarfBuzz.Font("DejaVu Sans"; size = 18)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("not a file", sprint(showerror, err))
 end
 
 # --- Shaping --------------------------------------------------------------
 
 @testitem "has_glyph for ASCII" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     @test HarfBuzz.has_glyph(font, UInt32('A'))
     @test HarfBuzz.has_glyph(font, UInt32('M'))
     @test HarfBuzz.has_glyph(font, UInt32('|'))
@@ -237,17 +238,17 @@ end
 
 @testitem "has_glyph: monospace font lacks CJK" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     @test !HarfBuzz.has_glyph(font, UInt32(0x6f22))  # 漢
 end
 
 @testitem "shape basic ASCII" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "Hello")
     @test length(result.infos) == 5
     @test length(result.positions) == 5
@@ -259,9 +260,9 @@ end
 
 @testitem "shape regional indicator pair (flag)" begin
     import HarfBuzz
-    name = Main._find_cjk_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_cjk_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "🇫🇷")
     @test length(result.infos) >= 1
     @test minimum(HarfBuzz.clusters(result)) == 0
@@ -269,9 +270,9 @@ end
 
 @testitem "shape CJK" begin
     import HarfBuzz
-    name = Main._find_cjk_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_cjk_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "漢字")
     # Should produce at least 1 glyph (some fonts may ligate or have
     # different cluster mappings across platforms)
@@ -453,9 +454,9 @@ end
 
 @testitem "glyph flags are decoded" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "Hello")
     # Plain Latin in a monospace font: every position is safe to break.
     @test all(i -> !HarfBuzz.unsafe_to_break(i), result.infos)
@@ -482,9 +483,9 @@ end
 
 @testitem "produce_unsafe_to_concat is accepted by shaping" begin
     import HarfBuzz
-    name = Main._find_kern_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_kern_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "office")
     HarfBuzz.guess_segment_properties!(buf)
@@ -499,9 +500,9 @@ end
 
 @testitem "serialize to text" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hi")
     HarfBuzz.guess_segment_properties!(buf)
@@ -515,9 +516,9 @@ end
 
 @testitem "serialize to JSON" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hi")
     HarfBuzz.guess_segment_properties!(buf)
@@ -531,9 +532,9 @@ end
 
 @testitem "serialize round-trips through deserialize" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hello")
     HarfBuzz.guess_segment_properties!(buf)
@@ -547,9 +548,9 @@ end
 
 @testitem "serialize honours flags" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hi")
     HarfBuzz.guess_segment_properties!(buf)
@@ -566,9 +567,9 @@ end
 
 @testitem "diff reports equality and mismatches" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
 
     a = HarfBuzz.Buffer(); HarfBuzz.add_text!(a, "Hi")
     HarfBuzz.guess_segment_properties!(a); HarfBuzz.shape!(font, a)
@@ -585,9 +586,9 @@ end
 
 @testitem "shape! accepts a shaper list" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hello")
     HarfBuzz.guess_segment_properties!(buf)
@@ -623,9 +624,9 @@ end
 
 @testitem "shape accepts Feature values and strings" begin
     import HarfBuzz
-    name = Main._find_kern_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_kern_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     text = "AVAWTo"
     default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
     from_str = [p.x_advance for p in
@@ -642,9 +643,9 @@ end
 
 @testitem "message func observes shaping stages" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     buf = HarfBuzz.Buffer()
     HarfBuzz.add_text!(buf, "Hello")
     HarfBuzz.guess_segment_properties!(buf)
@@ -660,9 +661,9 @@ end
 
 @testitem "every shaped glyph has a non-zero advance" begin
     import HarfBuzz
-    name = Main._find_mono_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_mono_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     result = HarfBuzz.shape(font, "Hello")
     @test length(result.positions) == 5
     # Reading positions with the wrong stride leaves every entry after the
@@ -688,9 +689,9 @@ end
 
 @testitem "disabling kerning changes advances" begin
     import HarfBuzz
-    name = Main._find_kern_name()
-    name === nothing && return
-    font = HarfBuzz.Font(name; size = 18)
+    path = Main._find_kern_font()
+    path === nothing && return
+    font = HarfBuzz.Font(path; size = 18)
     text = "AVAWTo"
     default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
     nokern = [p.x_advance for p in

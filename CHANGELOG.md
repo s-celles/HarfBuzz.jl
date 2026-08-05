@@ -22,11 +22,9 @@ now stands rather than a trail of intermediate API changes.
   HarfBuzz reads the font tables itself, so the package depends only on
   `HarfBuzz_jll`. `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!` expose
   the size state, and `px` converts 26.6 fixed point to pixels.
-- `FreeType` and `FreeTypeAbstraction` are `weakdeps` behind two package
-  extensions: `funcs = :freetype` requires `using FreeType`, and
-  family-name lookup (`Font("DejaVu Sans"; size = 18)`) requires
-  `using FreeTypeAbstraction`. Both raise an `ArgumentError` naming the
-  package to add when it is missing.
+- `FreeType` is a `weakdep` behind one package extension: `funcs =
+  :freetype` requires `using FreeType`, and raises an `ArgumentError`
+  naming the package to add when it is missing.
 - `shape` / `shape!` — the core shaping API — returning glyph infos and
   positions. Both take a `shapers` list, selecting the backend through
   `hb_shape_full`; `shapers()` lists what this build supports.
@@ -62,6 +60,11 @@ now stands rather than a trail of intermediate API changes.
 
 ### Changed
 
+- The package resolves no font names. `Font` takes a path to a font file;
+  anything else raises an `ArgumentError`. HarfBuzz has no font database
+  and neither do the other bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs),
+  so matching belongs to Fontconfig.jl, FreeTypeAbstraction.jl or a
+  platform API.
 - Types carry no `Hb` prefix and nothing is exported: `Font`, `Face`,
   `Buffer`, `Blob` and `Feature` are too generic for a user's namespace.
   Use `import HarfBuzz as HB`.

@@ -156,15 +156,13 @@ Shipped:
   `table_tags`, `reference_table`
 - `Font(face)` with `hb_ot_font_set_funcs` — the default, no FreeType
 - `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!`, and `px` for 26.6 → pixels
-- `FreeType` and `FreeTypeAbstraction` moved to `weakdeps` behind
-  `HarfBuzzFreeTypeExt` (the `funcs = :freetype` backend, over
-  `FT_New_Memory_Face` on the face's own blob) and
-  `HarfBuzzFreeTypeAbstractionExt` (family-name lookup). The package now
-  depends only on `HarfBuzz_jll`.
+- `FreeType` moved to a `weakdep` behind `HarfBuzzFreeTypeExt` (the
+  `funcs = :freetype` backend, over `FT_New_Memory_Face` on the face's own
+  blob). The package now depends only on `HarfBuzz_jll`.
 - Types lost the `Hb` prefix and the module exports nothing
 
-All three paths — native, `funcs = :freetype`, and family-name lookup —
-produce identical advances on the same font and size.
+Both paths — native and `funcs = :freetype` — produce identical advances
+on the same font and size.
 
 Deferred to Phase 3, where they sit with the rest of the font API:
 `hb_font_create_sub_font`, synthetic bold and slant, immutability,
@@ -271,17 +269,32 @@ real.
    the scale to `18 * 64`; `scale = (x, y)` sets it directly in font units
    and takes precedence. Positions stay `Int32` in 26.6 — `px` converts.
 
+4. **Does `FreeTypeAbstraction` stay a dependency?** **No — family-name
+   resolution is gone.** `Font` takes a path; anything else raises an
+   `ArgumentError` pointing at Fontconfig.jl, FreeTypeAbstraction.jl or a
+   platform API. Three reasons:
+
+   - `FTFont` exposes no file path (its fields are `ft_ptr`, `use_cache`,
+     `extent_cache`, `lock`, `mmapped`, `fontname`), so a family name could
+     never reach the native backend. `Font(name)` was permanently
+     FreeType-backed while `Font(path)` was OT-backed — the same call
+     shape giving different metrics.
+   - No official binding does font matching. uharfbuzz, harfbuzz_rs,
+     harfbuzzjs and luaharfbuzz all take bytes or a path; HarfBuzz upstream
+     leaves enumeration to fontconfig, CoreText and DirectWrite.
+   - `findfont` measured 14 ms per call here, opening and scoring all 580
+     files in the four font directories, with no cache.
+
+   Should family lookup ever come back, `Fontconfig_jll` is the better base
+   than FreeTypeAbstraction: it returns a *path*, so the native backend
+   keeps working, and it already ships as an indirect dependency of
+   `HarfBuzz_jll` — no extra download. It would still belong in its own
+   extension, and would return a path rather than a `Font`.
+
 ## Open questions
 
 These need a decision before the corresponding work starts. Several affect
 the public API and are cheapest to settle before 0.1.0 is released.
-
-4. **Does `FreeTypeAbstraction` stay a dependency at all?** It is now a
-   weakdep used only for family-name resolution, but `findfont` opens and
-   scores *every* font file in every font directory on each call, which is
-   slow, and font enumeration is arguably a separate concern. Options: keep
-   the extension as is, replace it with `Fontconfig_jll`, or drop
-   family-name resolution from this package entirely.
 
 5. **How are features specified?** Today: `Vector{Tuple{String,Int}}`.
    Alternatives: a `Dict{String,Int}` like `uharfbuzz`, HarfBuzz's own string

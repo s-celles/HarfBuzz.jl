@@ -71,16 +71,20 @@ HB.reference_table(face, "cmap")
 
 ### FreeType (optional)
 
-HarfBuzz reads the font tables itself by default. FreeType lives behind
-package extensions:
+HarfBuzz reads the font tables itself by default. FreeType lives behind a
+package extension:
 
 ```julia
 using FreeType                  # enables funcs = :freetype
 font = HB.Font(face; size = 18, funcs = :freetype)
-
-using FreeTypeAbstraction       # enables family-name lookup
-font = HB.Font("DejaVu Sans Mono"; size = 18)
 ```
+
+### Font files, not font names
+
+This package matches no font names — HarfBuzz has no font database, and
+neither do `uharfbuzz`, `harfbuzz_rs` or `harfbuzzjs`. Resolve a family
+name with Fontconfig.jl, FreeTypeAbstraction.jl or a platform API, then
+pass the resulting path.
 
 ## API
 
@@ -89,7 +93,7 @@ font = HB.Font("DejaVu Sans Mono"; size = 18)
 | `Blob(path)` / `Blob(bytes)` | Wrap font bytes |
 | `Face(blob; index)` / `Face(path)` | A face inside those bytes |
 | `Font(face; size, scale, funcs)` | A face at a size, ready to shape |
-| `Font(path; size)` / `Font(family; size)` | Shorthands |
+| `Font(path; size)` | Shorthand for a file on disk |
 | `upem`, `glyph_count`, `face_index`, `face_count` | Face metadata |
 | `table_tags`, `reference_table`, `data` | Raw table access |
 | `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!` | Font size state |

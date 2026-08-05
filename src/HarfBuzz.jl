@@ -8,7 +8,7 @@ const libhb = HarfBuzz_jll.libharfbuzz_path
 # generic to put in a user's namespace. Use the module instead:
 #
 #     import HarfBuzz as HB
-#     font = HB.Font("DejaVu Sans"; size = 18)
+#     font = HB.Font("/path/to/DejaVuSans.ttf"; size = 18)
 #
 # Set once the process starts shutting down. See `_font_destroy`.
 const _EXITING = Ref(false)
@@ -339,8 +339,9 @@ offsets come back in 26.6 fixed point; use [`px`](@ref) to convert them.
 - `:freetype` -- metrics come from FreeType, matching its hinting and
   rounding. Requires `using FreeType`, which loads the extension.
 
-Passing a family name rather than a path requires
-`using FreeTypeAbstraction`; such fonts are always FreeType-backed.
+`path` must be a font file. HarfBuzz has no font database, and neither
+does this package: resolve family names with Fontconfig.jl,
+FreeTypeAbstraction.jl or a platform API, then pass the path.
 
 ```julia
 font = Font("/System/Library/Fonts/Menlo.ttc"; size = 18)
@@ -387,13 +388,15 @@ _size_px(size, scale) =
     size !== nothing ? Float64(size) :
     scale !== nothing ? Float64(scale[1]) / 64 : 18.0
 
-function Font(name::AbstractString; size = nothing, scale = nothing,
+function Font(path::AbstractString; size = nothing, scale = nothing,
               index::Integer = 0, funcs::Symbol = :ot)
-    if isfile(String(name))
-        return Font(Face(String(name); index = index);
-                    size = size, scale = scale, funcs = funcs)
-    end
-    return _resolve_family(String(name); size = size, scale = scale)
+    isfile(String(path)) || throw(ArgumentError(
+        "$(repr(String(path))) is not a file. HarfBuzz has no font " *
+        "database and neither does this package: pass a path to a font " *
+        "file, or resolve the family name yourself (Fontconfig.jl, " *
+        "FreeTypeAbstraction.jl, or a platform API)."))
+    return Font(Face(String(path); index = index);
+                size = size, scale = scale, funcs = funcs)
 end
 
 # `_create_font(::Val{:freetype}, ...)` is added by the FreeType
@@ -411,18 +414,6 @@ function _create_font(::Val{:ot}, face::Face, size, scale)
     font = Font(ptr, face, nothing)
     finalizer(_font_destroy, font)
     return _apply_scale!(font, size, scale)
-end
-
-# Set by the FreeTypeAbstraction extension. Resolving a family name needs
-# a font database, which HarfBuzz does not provide.
-const _FAMILY_RESOLVER = Ref{Any}(nothing)
-
-function _resolve_family(name::AbstractString; kwargs...)
-    resolver = _FAMILY_RESOLVER[]
-    resolver === nothing && throw(ArgumentError(
-        "'$name' is not a file, and resolving font family names requires " *
-        "a font database; add `using FreeTypeAbstraction`"))
-    return resolver(name; kwargs...)
 end
 
 """
