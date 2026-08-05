@@ -280,6 +280,382 @@ end
     @test minimum(HarfBuzz.clusters(result)) == 0
 end
 
+# --- Library and tag helpers ---------------------------------------------
+
+@testitem "library version" begin
+    import HarfBuzz
+    v = HarfBuzz.version()
+    @test v isa VersionNumber
+    @test v >= v"8"
+    @test startswith(HarfBuzz.version_string(), string(v.major))
+end
+
+@testitem "tags round-trip" begin
+    import HarfBuzz
+    @test HarfBuzz.tag_string(HarfBuzz.tag("kern")) == "kern"
+    @test HarfBuzz.tag_string(HarfBuzz.tag("cv01")) == "cv01"
+    # Short names are padded to four bytes, long ones truncated.
+    @test HarfBuzz.tag_string(HarfBuzz.tag("cv")) == "cv  "
+    @test HarfBuzz.tag_string(HarfBuzz.tag("toolong")) == "tool"
+end
+
+@testitem "available shapers" begin
+    import HarfBuzz
+    shapers = HarfBuzz.shapers()
+    @test !isempty(shapers)
+    @test "ot" in shapers
+    @test all(s -> s isa String, shapers)
+end
+
+# --- Buffer properties ----------------------------------------------------
+
+@testitem "buffer direction, script and language" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "abc")
+
+    HarfBuzz.direction!(buf, :rtl)
+    @test HarfBuzz.direction(buf) == :rtl
+    HarfBuzz.direction!(buf, :ltr)
+    @test HarfBuzz.direction(buf) == :ltr
+
+    HarfBuzz.script!(buf, :Arab)
+    @test HarfBuzz.script(buf) == :Arab
+
+    HarfBuzz.language!(buf, "fr")
+    @test HarfBuzz.language(buf) == "fr"
+end
+
+@testitem "guess_segment_properties fills the properties" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "مرحبا")
+    HarfBuzz.guess_segment_properties!(buf)
+    @test HarfBuzz.direction(buf) == :rtl
+    @test HarfBuzz.script(buf) == :Arab
+
+    props = HarfBuzz.segment_properties(buf)
+    @test props.direction == :rtl
+    @test props.script == :Arab
+end
+
+@testitem "segment_properties! sets all three at once" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "abc")
+    HarfBuzz.segment_properties!(buf,
+        (direction = :ltr, script = :Latn, language = "en"))
+    @test HarfBuzz.segment_properties(buf) ==
+          (direction = :ltr, script = :Latn, language = "en")
+end
+
+@testitem "buffer flags" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    @test HarfBuzz.flags(buf) == Symbol[]
+    HarfBuzz.flags!(buf, [:bot, :eot])
+    @test sort(HarfBuzz.flags(buf)) == [:bot, :eot]
+    HarfBuzz.flags!(buf, Symbol[])
+    @test HarfBuzz.flags(buf) == Symbol[]
+    @test_throws ArgumentError HarfBuzz.flags!(buf, [:not_a_flag])
+end
+
+@testitem "buffer cluster level and content type" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    @test HarfBuzz.cluster_level(buf) == :monotone_graphemes
+    HarfBuzz.cluster_level!(buf, :characters)
+    @test HarfBuzz.cluster_level(buf) == :characters
+    @test_throws ArgumentError HarfBuzz.cluster_level!(buf, :nope)
+
+    @test HarfBuzz.content_type(buf) == :invalid
+    HarfBuzz.add_text!(buf, "abc")
+    @test HarfBuzz.content_type(buf) == :unicode
+end
+
+@testitem "buffer replacement and special glyphs" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.replacement_codepoint!(buf, UInt32('?'))
+    @test HarfBuzz.replacement_codepoint(buf) == UInt32('?')
+    HarfBuzz.invisible_glyph!(buf, UInt32(3))
+    @test HarfBuzz.invisible_glyph(buf) == 3
+    HarfBuzz.not_found_glyph!(buf, UInt32(1))
+    @test HarfBuzz.not_found_glyph(buf) == 1
+end
+
+# --- Buffer contents ------------------------------------------------------
+
+@testitem "buffer length, reset and clear" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    @test length(buf) == 0
+    @test isempty(buf)
+    HarfBuzz.add_text!(buf, "hello")
+    @test length(buf) == 5
+    @test !isempty(buf)
+
+    HarfBuzz.clear!(buf)
+    @test length(buf) == 0
+
+    HarfBuzz.add_text!(buf, "hi")
+    HarfBuzz.direction!(buf, :rtl)
+    HarfBuzz.reset!(buf)
+    # reset also drops the properties, unlike clear!
+    @test length(buf) == 0
+    @test HarfBuzz.direction(buf) == :invalid
+end
+
+@testitem "add_text! with an item range" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    # The whole string is context; only bytes 3:5 become items.
+    HarfBuzz.add_text!(buf, "abcdefgh"; item_offset = 2, item_length = 3)
+    @test length(buf) == 3
+    @test HarfBuzz.codepoints(buf) == UInt32.(collect("cde"))
+end
+
+@testitem "add_codepoints!" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_codepoints!(buf, UInt32[0x41, 0x42, 0x43])
+    @test length(buf) == 3
+    @test HarfBuzz.codepoints(buf) == UInt32[0x41, 0x42, 0x43]
+end
+
+@testitem "append! joins two buffers" begin
+    import HarfBuzz
+    a = HarfBuzz.Buffer(); HarfBuzz.add_text!(a, "ab")
+    b = HarfBuzz.Buffer(); HarfBuzz.add_text!(b, "cd")
+    append!(a, b)
+    @test length(a) == 4
+    @test HarfBuzz.codepoints(a) == UInt32.(collect("abcd"))
+end
+
+@testitem "reverse! and reverse_clusters!" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "abc")
+    HarfBuzz.reverse!(buf)
+    @test HarfBuzz.codepoints(buf) == UInt32.(collect("cba"))
+    HarfBuzz.reverse_clusters!(buf)
+    @test HarfBuzz.codepoints(buf) == UInt32.(collect("abc"))
+end
+
+@testitem "pre_allocate! reports success" begin
+    import HarfBuzz
+    buf = HarfBuzz.Buffer()
+    @test HarfBuzz.pre_allocate!(buf, 128)
+    @test HarfBuzz.allocation_successful(buf)
+end
+
+# --- Glyph flags ----------------------------------------------------------
+
+@testitem "glyph flags are decoded" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    result = HarfBuzz.shape(font, "Hello")
+    # Plain Latin in a monospace font: every position is safe to break.
+    @test all(i -> !HarfBuzz.unsafe_to_break(i), result.infos)
+    @test all(i -> i.flags & ~HarfBuzz.HB_GLYPH_FLAG_DEFINED == 0, result.infos)
+end
+
+@testitem "glyph flag predicates" begin
+    import HarfBuzz
+    none = HarfBuzz.GlyphInfo(UInt32(1), UInt32(0), UInt32(0))
+    brk = HarfBuzz.GlyphInfo(UInt32(1), UInt32(0),
+                             HarfBuzz.HB_GLYPH_FLAG_UNSAFE_TO_BREAK)
+    cat = HarfBuzz.GlyphInfo(UInt32(1), UInt32(0),
+                             HarfBuzz.HB_GLYPH_FLAG_UNSAFE_TO_CONCAT)
+    tat = HarfBuzz.GlyphInfo(UInt32(1), UInt32(0),
+                             HarfBuzz.HB_GLYPH_FLAG_SAFE_TO_INSERT_TATWEEL)
+
+    @test !HarfBuzz.unsafe_to_break(none)
+    @test HarfBuzz.unsafe_to_break(brk)
+    @test !HarfBuzz.unsafe_to_concat(brk)
+    @test HarfBuzz.unsafe_to_concat(cat)
+    @test !HarfBuzz.unsafe_to_break(cat)
+    @test HarfBuzz.safe_to_insert_tatweel(tat)
+end
+
+@testitem "produce_unsafe_to_concat is accepted by shaping" begin
+    import HarfBuzz
+    name = Main._find_kern_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "office")
+    HarfBuzz.guess_segment_properties!(buf)
+    HarfBuzz.flags!(buf, [:produce_unsafe_to_concat])
+    result = HarfBuzz.shape!(font, buf)
+    @test length(result.infos) >= 1
+    # Whatever the font does, only the three defined bits may be set.
+    @test all(i -> i.flags & ~HarfBuzz.HB_GLYPH_FLAG_DEFINED == 0, result.infos)
+end
+
+# --- Serialization --------------------------------------------------------
+
+@testitem "serialize to text" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "Hi")
+    HarfBuzz.guess_segment_properties!(buf)
+    HarfBuzz.shape!(font, buf)
+
+    text = HarfBuzz.serialize(buf; font = font)
+    @test text isa String
+    @test !isempty(text)
+    @test count('|', text) == 1     # two glyphs, one separator
+end
+
+@testitem "serialize to JSON" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "Hi")
+    HarfBuzz.guess_segment_properties!(buf)
+    HarfBuzz.shape!(font, buf)
+
+    json = HarfBuzz.serialize(buf; font = font, format = :json)
+    @test startswith(json, "[")
+    @test endswith(json, "]")
+    @test occursin("\"cl\"", json)
+end
+
+@testitem "serialize round-trips through deserialize" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "Hello")
+    HarfBuzz.guess_segment_properties!(buf)
+    HarfBuzz.shape!(font, buf)
+    text = HarfBuzz.serialize(buf; font = font)
+
+    other = HarfBuzz.Buffer()
+    HarfBuzz.deserialize!(other, text; font = font)
+    @test HarfBuzz.glyph_infos(other) == HarfBuzz.glyph_infos(buf)
+end
+
+@testitem "serialize honours flags" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "Hi")
+    HarfBuzz.guess_segment_properties!(buf)
+    HarfBuzz.shape!(font, buf)
+
+    with = HarfBuzz.serialize(buf; font = font)
+    without = HarfBuzz.serialize(buf; font = font,
+                                 flags = [:no_clusters, :no_positions])
+    @test with != without
+    @test !occursin("=", without)
+end
+
+# --- Buffer comparison ----------------------------------------------------
+
+@testitem "diff reports equality and mismatches" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+
+    a = HarfBuzz.Buffer(); HarfBuzz.add_text!(a, "Hi")
+    HarfBuzz.guess_segment_properties!(a); HarfBuzz.shape!(font, a)
+    b = HarfBuzz.Buffer(); HarfBuzz.add_text!(b, "Hi")
+    HarfBuzz.guess_segment_properties!(b); HarfBuzz.shape!(font, b)
+    @test HarfBuzz.diff(a, b) == Symbol[]
+
+    c = HarfBuzz.Buffer(); HarfBuzz.add_text!(c, "Ho")
+    HarfBuzz.guess_segment_properties!(c); HarfBuzz.shape!(font, c)
+    @test :codepoint_mismatch in HarfBuzz.diff(a, c)
+end
+
+# --- Shapers and features -------------------------------------------------
+
+@testitem "shape! accepts a shaper list" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "Hello")
+    HarfBuzz.guess_segment_properties!(buf)
+    result = HarfBuzz.shape!(font, buf; shapers = ["ot"])
+    @test length(result.infos) == 5
+
+    buf2 = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf2, "Hello")
+    HarfBuzz.guess_segment_properties!(buf2)
+    @test_throws ErrorException HarfBuzz.shape!(font, buf2;
+                                                shapers = ["no-such-shaper"])
+end
+
+@testitem "features parse from HarfBuzz string syntax" begin
+    import HarfBuzz
+    f = HarfBuzz.Feature("kern=0")
+    @test f.tag == HarfBuzz.tag("kern")
+    @test f.value == 0
+    @test f.start == HarfBuzz.HB_FEATURE_GLOBAL_START
+    @test f.stop == HarfBuzz.HB_FEATURE_GLOBAL_END
+
+    @test HarfBuzz.Feature("+liga").value == 1
+    @test HarfBuzz.Feature("-liga").value == 0
+
+    ranged = HarfBuzz.Feature("aalt[3:5]=2")
+    @test ranged.value == 2
+    @test ranged.start == 3
+    @test ranged.stop == 5
+
+    @test occursin("kern", string(HarfBuzz.Feature("kern=0")))
+    @test_throws ArgumentError HarfBuzz.Feature("!!not a feature!!")
+end
+
+@testitem "shape accepts Feature values and strings" begin
+    import HarfBuzz
+    name = Main._find_kern_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    text = "AVAWTo"
+    default = [p.x_advance for p in HarfBuzz.shape(font, text).positions]
+    from_str = [p.x_advance for p in
+                HarfBuzz.shape(font, text; features = ["kern=0"]).positions]
+    from_obj = [p.x_advance for p in
+                HarfBuzz.shape(font, text;
+                               features = [HarfBuzz.Feature("kern=0")]).positions]
+    @test from_str == from_obj
+    default == from_str && return   # font has no kerning pairs here
+    @test default != from_str
+end
+
+# --- Shaping trace --------------------------------------------------------
+
+@testitem "message func observes shaping stages" begin
+    import HarfBuzz
+    name = Main._find_mono_name()
+    name === nothing && return
+    font = HarfBuzz.Font(name; size = 18)
+    buf = HarfBuzz.Buffer()
+    HarfBuzz.add_text!(buf, "Hello")
+    HarfBuzz.guess_segment_properties!(buf)
+
+    messages = String[]
+    HarfBuzz.message_func!(buf, msg -> (push!(messages, msg); true))
+    HarfBuzz.shape!(font, buf)
+    @test !isempty(messages)
+    @test any(m -> occursin("start", m), messages)
+end
+
 # --- Phase 0 regression tests --------------------------------------------
 
 @testitem "every shaped glyph has a non-zero advance" begin
@@ -302,7 +678,7 @@ end
 @testitem "features are built over the whole buffer" begin
     import HarfBuzz
     f = HarfBuzz._make_feature("kern", 0)
-    @test f.tag == HarfBuzz._name_to_tag("kern")
+    @test f.tag == HarfBuzz.tag("kern")
     @test f.value == 0
     @test f.start == HarfBuzz.HB_FEATURE_GLOBAL_START
     # An `end` of 0 is an empty range, which makes the feature a no-op.

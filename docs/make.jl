@@ -18,6 +18,7 @@ makedocs(;
         "API" => [
             "Types" => "api/types.md",
             "Shaping" => "api/shaping.md",
+            "Buffers" => "api/buffers.md",
             "Font queries" => "api/queries.md",
         ],
     ],

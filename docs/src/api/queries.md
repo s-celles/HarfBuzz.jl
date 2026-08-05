@@ -1,5 +1,14 @@
 # Font queries
 
+## Library
+
+```@docs
+HarfBuzz.version
+HarfBuzz.version_string
+HarfBuzz.tag
+HarfBuzz.tag_string
+```
+
 ## Blob contents
 
 ```@docs

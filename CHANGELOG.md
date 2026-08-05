@@ -7,41 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing has been released yet, so this section describes the package as it
+now stands rather than a trail of intermediate API changes.
+
 ### Added
 
-- `Blob`, `Face` and the full object chain `Blob → Face → Font`, matching
-  the HarfBuzz C API and the other bindings.
-- Face queries: `upem`, `glyph_count`, `face_index`, `face_count`,
-  `table_tags`, `reference_table`, `data`.
-- Font size state: `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!`.
-- `px`, converting 26.6 fixed point to pixels.
-- `Font(face; funcs = :ot)`, HarfBuzz's own table reader, is now the
-  default source of glyph metrics; no FreeType involved.
+- Initial package wrapping HarfBuzz via `HarfBuzz_jll`, with the object
+  chain `Blob → Face → Font` and finalizer-based cleanup throughout.
+- `Blob` from a file path or from a Julia array (without copying), with
+  `length`, `data` and `face_count`.
+- `Face` with `upem`, `glyph_count`, `face_index`, `table_tags` and
+  `reference_table`.
+- `Font(face; size, scale, funcs)`, defaulting to `hb_ot_font_set_funcs`:
+  HarfBuzz reads the font tables itself, so the package depends only on
+  `HarfBuzz_jll`. `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!` expose
+  the size state, and `px` converts 26.6 fixed point to pixels.
+- `FreeType` and `FreeTypeAbstraction` are `weakdeps` behind two package
+  extensions: `funcs = :freetype` requires `using FreeType`, and
+  family-name lookup (`Font("DejaVu Sans"; size = 18)`) requires
+  `using FreeTypeAbstraction`. Both raise an `ArgumentError` naming the
+  package to add when it is missing.
+- `shape` / `shape!` — the core shaping API — returning glyph infos and
+  positions. Both take a `shapers` list, selecting the backend through
+  `hb_shape_full`; `shapers()` lists what this build supports.
+- Features as `Feature` values, HarfBuzz feature strings (`"kern=0"`,
+  `"-liga"`, `"aalt[3:5]=2"`) or `name => value` pairs.
+- Buffer properties: `direction`, `script`, `language`, `flags`,
+  `cluster_level`, `content_type`, `replacement_codepoint`,
+  `invisible_glyph`, `not_found_glyph`, and `segment_properties` for the
+  three segment properties at once. Enumerations are `Symbol`s at the API
+  surface (`:ltr`, `:Arab`, `:monotone_graphemes`).
+- Buffer contents: `add_text!` (with `item_offset` / `item_length` so a run
+  carries its surrounding context), `add_codepoints!`, `clear!`, `reset!`,
+  `reverse_clusters!`, `pre_allocate!`, `allocation_successful`,
+  `guess_segment_properties!`, plus `length`, `isempty`, `append!` and
+  `reverse!`.
+- Reading a buffer directly: `glyph_infos`, `glyph_positions`,
+  `codepoints`, `has_positions`.
+- Glyph flags on `GlyphInfo`, with `unsafe_to_break`, `unsafe_to_concat`
+  and `safe_to_insert_tatweel`. `unsafe_to_break` is what a line breaker
+  must consult before splitting a shaped run.
+- `serialize`, `deserialize!` and `diff` — the text and JSON formats
+  `hb-shape` produces, which make golden tests possible.
+- `message_func!`, tracing each shaping stage, equivalent to
+  `hb-shape --trace`.
+- Font glyph queries: `has_glyph`, `get_nominal_glyph`.
+- Library helpers: `version`, `version_string`, `tag`, `tag_string`.
+- `ROADMAP.md`: gap analysis against the HarfBuzz C API and the official
+  bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs, luaharfbuzz), phased plan,
+  and open API design questions.
+- GitHub Actions CI (Julia 1.12/1/nightly on Linux/macOS/Windows),
+  CompatHelper, TagBot, and Dependabot.
+- Documentation via Documenter.jl with API reference.
 
 ### Changed
 
-- **Breaking.** Types lose the `Hb` prefix: `HbFont` → `Font`,
-  `HbBuffer` → `Buffer`, `HbFeature` → `Feature`. Nothing is exported any
-  more — `Font`, `Face`, `Buffer` and `Blob` are too generic for a user's
-  namespace. Use `import HarfBuzz as HB`.
-- **Breaking.** `Font` takes its size as a keyword: `Font(path; size = 18)`
-  instead of `HbFont(path, 18)`. `scale = (x, y)` sets the scale directly
-  in font units.
-- **Breaking.** `FreeType` and `FreeTypeAbstraction` moved to `weakdeps`
-  behind two package extensions. The package now depends only on
-  `HarfBuzz_jll`. `funcs = :freetype` requires `using FreeType`, and
-  family-name lookup (`Font("DejaVu Sans"; size = 18)`) requires
-  `using FreeTypeAbstraction`; both raise an `ArgumentError` naming the
-  package to add when it is missing.
-- `FreeType2_jll` dropped from the dependencies; it was unused.
+- Types carry no `Hb` prefix and nothing is exported: `Font`, `Face`,
+  `Buffer`, `Blob` and `Feature` are too generic for a user's namespace.
+  Use `import HarfBuzz as HB`.
+- `HarfBuzz_jll` compat is `100.14002`, dropping the legacy 8.x line.
 
 ### Fixed
 
+These were found by comparing the binding against the JLL headers and by
+measurement; each is covered by a regression test.
+
 - `hb_ft_font_create` was called with one argument instead of two, leaving
   the `destroy` callback undefined; `hb_font_destroy` then jumped to a
-  garbage pointer. `HbFont` now uses `hb_ft_font_create_referenced`, which
-  takes a single argument and manages the `FT_Face` lifetime, and fonts are
-  destroyed instead of leaked.
+  garbage pointer. The FreeType path now uses
+  `hb_ft_font_create_referenced`, which takes a single argument and manages
+  the `FT_Face` lifetime, and fonts are destroyed instead of leaked.
 - Glyph positions were read with a 24-byte stride where
   `hb_glyph_position_t` is 20 bytes, so every advance and offset after the
   first glyph was zero. Positions and infos are now decoded through structs
@@ -49,39 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shaping features were built with an empty range (`start = end = 0`) and
   never applied. They now default to `HB_FEATURE_GLOBAL_START` ..
   `HB_FEATURE_GLOBAL_END`.
-- `_name_to_tag` indexed characters while measuring bytes; it now indexes
-  code units.
-- `HbFont` created one `FT_Library` per font and never released it; a single
-  library is now created in `__init__`.
-- The family-name branch of `HbFont` ignored the `FT_Set_Char_Size` return
-  code.
+- Tag packing indexed characters while measuring bytes; `tag` now calls
+  `hb_tag_from_string`.
+- One `FT_Library` was created per font and never released; the FreeType
+  extension now shares a single library.
+- The family-name path ignored the `FT_Set_Char_Size` return code.
 - Fonts finalized at process teardown called `FT_Done_Face` after
   `FreeTypeAbstraction`'s `atexit` hook had already destroyed its
   `FT_Library`, segfaulting on exit. Destruction is now skipped once the
   process is shutting down.
-
-### Changed
-
-- Bump `HarfBuzz_jll` compat from `8` to `100.14002` (drop the legacy
-  8.x line; require the current HarfBuzz release).
-
-### Added
-
-- `ROADMAP.md`: gap analysis against the HarfBuzz C API and the official
-  bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs, luaharfbuzz), phased plan,
-  and open API design questions.
-- Initial package scaffold wrapping HarfBuzz via `HarfBuzz_jll`.
-- `HbBlob`, `HbFace`, `HbFont`, `HbBuffer` opaque handle types with
-  automatic finalizer-based cleanup.
-- FreeType-backed font creation (`HbFont(path, size)`) via
-  `hb_ft_font_create` so that glyph advances are available.
-- `shape!` / `shape` — the core shaping API: takes a font + text and
-  returns glyph infos and positions.
-- `add_text!`, `clear!`, `guess_segment_properties!` — buffer management.
-- `has_glyph`, `get_nominal_glyph` — font glyph availability queries.
-- `get_glyph_count` — face glyph count.
-- Tests for face/font creation, glyph availability, ASCII/CJK shaping,
-  and regional indicator pair shaping.
-- GitHub Actions CI (Julia 1.12/1/nightly on Linux/macOS/Windows),
-  CompatHelper, TagBot, and Dependabot.
-- Documentation via Documenter.jl with API reference.

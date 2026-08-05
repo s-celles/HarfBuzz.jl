@@ -16,15 +16,17 @@ Reference points used for the gap analysis:
 
 ## Status
 
-`HarfBuzz.jl` binds **34 of the 508 `hb_*` symbols** exported by
+`HarfBuzz.jl` binds **75 of the 508 `hb_*` symbols** exported by
 `libharfbuzz` in the JLL. `libharfbuzz-subset` and `libharfbuzz-gobject` ship
 in the same artifact and are unused.
 
-Phases 0 and 1 are done: the defects that made shaping silently incorrect
-are fixed, and the `Blob → Face → Font` chain is in place with HarfBuzz's own
-table reader as the default metrics source, so the package depends only on
-`HarfBuzz_jll`. What remains missing is the buffer API, the font and face
-queries, and everything beyond shaping — see the phases below.
+Phases 0, 1 and 2 are done: the defects that made shaping silently
+incorrect are fixed, the `Blob → Face → Font` chain is in place with
+HarfBuzz's own table reader as the default metrics source (so the package
+depends only on `HarfBuzz_jll`), and the buffer API is complete enough to
+drive shaping properly — segment properties, glyph flags, serialization.
+What remains missing is the font and face query surface, and everything
+beyond shaping — see the phases below.
 
 ## Phase 0 — Correctness — **done**
 
@@ -111,11 +113,11 @@ feature can be applied to a sub-range of the buffer.
   code. Fixed.
 - One `FT_Library` was created per `HbFont` and never destroyed. Replaced by
   a single module-level library created in `__init__`.
-- `add_text!` still does not expose `item_offset` / `item_length`, so no
-  context can be supplied around the shaped run (needed for correct
-  contextual forms at run boundaries, e.g. Arabic). Deferred to Phase 2.
-- `hb_buffer_allocation_successful` is still never checked. Deferred to
-  Phase 2.
+- `add_text!` did not expose `item_offset` / `item_length`, so no context
+  could be supplied around the shaped run (needed for correct contextual
+  forms at run boundaries, e.g. Arabic). Done in Phase 2.
+- `hb_buffer_allocation_successful` was never checked. Done in Phase 2:
+  every mutation checks it and raises `OutOfMemoryError`.
 
 ### 0.5 Use-after-free at process teardown — fixed
 
@@ -168,25 +170,43 @@ Deferred to Phase 3, where they sit with the rest of the font API:
 `hb_font_create_sub_font`, synthetic bold and slant, immutability,
 `face.unicodes` (needs `hb_set_t`).
 
-## Phase 2 — Buffer API
+## Phase 2 — Buffer API — **done**
+
+Shipped:
 
 - Properties: `direction`, `script`, `language`, `flags`, `cluster_level`,
   `content_type`, `invisible_glyph`, `not_found_glyph`,
-  `replacement_codepoint`, `segment_properties`
-- Input: `hb_buffer_add`, `add_codepoints`, `add_utf16`, `add_utf32`,
-  `add_latin1`, `append`, plus `item_offset`/`item_length` context
-- Manipulation: `reset`, `reverse`, `reverse_clusters`, `length`,
-  `pre_allocate`, `diff`
-- `hb_buffer_serialize_glyphs` / `deserialize_glyphs` (text and JSON) —
-  the basis for golden tests comparable to the `hb-shape` CLI
-- `hb_buffer_set_message_func` for tracing shaping steps
-- `hb_glyph_info_get_glyph_flags` — `UNSAFE_TO_BREAK` and
-  `UNSAFE_TO_CONCAT` are required for correct line breaking, which is
-  directly relevant to the ImGui use case
-- Common types: `hb_direction_t`, `hb_script_t`, `hb_language_t`,
-  `hb_tag_t` ↔ string, `hb_version_string`
-- `hb_shape_full` (shaper list), `hb_shape_list_shapers`,
-  `hb_feature_from_string` / `hb_feature_to_string` (`"liga=0"`, `"+kern"`)
+  `replacement_codepoint`, and `segment_properties` for all three segment
+  properties at once. Enumerations are `Symbol`s at the surface (`:ltr`,
+  `:Arab`, `:monotone_graphemes`) and integers underneath.
+- Input: `add_codepoints!`, `append!`, and `item_offset`/`item_length` on
+  `add_text!` so a run carries its surrounding context
+- Manipulation: `reset!`, `reverse!`, `reverse_clusters!`, `length`,
+  `isempty`, `pre_allocate!`, `allocation_successful`, `diff`
+- `serialize` / `deserialize!` in both text and JSON, matching what the
+  `hb-shape` CLI prints — the basis for golden tests
+- `message_func!` for tracing shaping steps, i.e. `hb-shape --trace`
+- Glyph flags on `GlyphInfo`, with `unsafe_to_break`, `unsafe_to_concat`
+  and `safe_to_insert_tatweel`. `unsafe_to_break` is what line breaking
+  needs, which is directly relevant to the ImGui use case.
+- Common types: direction, script and language conversions, `tag` ↔
+  `tag_string`, `version`, `version_string`
+- `hb_shape_full` through `shape!(...; shapers = ["ot"])`, plus `shapers()`
+- Features parse from HarfBuzz's own syntax (`"kern=0"`, `"-liga"`,
+  `"aalt[3:5]=2"`) and print back to it
+
+Not done, and not worth their own phase — pick them up when something
+needs them: `hb_buffer_add_utf16` / `add_utf32` / `add_latin1` (Julia
+strings are UTF-8, and `add_codepoints!` covers decoded input),
+`hb_buffer_create_similar`, `hb_buffer_normalize_glyphs`,
+`hb_buffer_serialize_unicode` / `deserialize_unicode`,
+`hb_buffer_set_unicode_funcs`.
+
+Testing note: assertions about *which* glyphs come back unsafe to break
+are font-dependent, so the flag predicates are unit-tested on constructed
+values and the integration test only checks that no undefined bit is ever
+set. A vendored test font (open question 10) would let this be tested for
+real.
 
 ## Phase 3 — Font and face queries
 

@@ -34,5 +34,4 @@ HarfBuzz.Buffer
 HarfBuzz.GlyphInfo
 HarfBuzz.GlyphPosition
 HarfBuzz.ShapeResult
-HarfBuzz.Feature
 ```

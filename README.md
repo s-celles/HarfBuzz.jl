@@ -40,6 +40,25 @@ HB.has_glyph(font, UInt32(0x6f22))    # false — Menlo lacks CJK
 Advances and offsets come back in 26.6 fixed point; `HB.px` converts them
 to pixels.
 
+### Driving the buffer
+
+`shape` is a shortcut; a buffer gives control over how the text is shaped
+and lets you inspect the result.
+
+```julia
+buf = HB.Buffer()
+HB.add_text!(buf, "مرحبا")
+HB.guess_segment_properties!(buf)
+HB.direction(buf)                  # :rtl
+HB.script(buf)                     # :Arab
+
+result = HB.shape!(font, buf)
+HB.serialize(buf; font = font)     # same output as the hb-shape CLI
+```
+
+`unsafe_to_break(info)` tells a line breaker where a shaped run may not be
+split.
+
 ### Inspecting a face
 
 ```julia
@@ -74,11 +93,17 @@ font = HB.Font("DejaVu Sans Mono"; size = 18)
 | `upem`, `glyph_count`, `face_index`, `face_count` | Face metadata |
 | `table_tags`, `reference_table`, `data` | Raw table access |
 | `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!` | Font size state |
-| `Buffer()`, `add_text!`, `clear!`, `guess_segment_properties!` | Buffers |
-| `shape(font, text; features)` | One-shot shaping |
-| `shape!(font, buf; features)` | Shape an existing buffer |
+| `Buffer()`, `add_text!`, `add_codepoints!`, `clear!`, `reset!` | Buffers |
+| `direction`, `script`, `language`, `segment_properties` | Buffer properties |
+| `flags`, `cluster_level`, `content_type` | Buffer behaviour |
+| `shape(font, text; features, shapers)` | One-shot shaping |
+| `shape!(font, buf; features, shapers)` | Shape an existing buffer |
 | `glyph_ids`, `clusters`, `px` | Result accessors |
+| `unsafe_to_break`, `unsafe_to_concat` | Where a run may be split |
+| `serialize`, `deserialize!`, `diff` | Golden-test support |
+| `message_func!` | Trace shaping stages |
 | `has_glyph`, `get_nominal_glyph` | Glyph availability |
+| `version`, `shapers`, `tag`, `tag_string` | Library helpers |
 
 See the [documentation](https://s-celles.github.io/HarfBuzz.jl/dev/) for
 details, and [ROADMAP.md](ROADMAP.md) for what is still missing compared
