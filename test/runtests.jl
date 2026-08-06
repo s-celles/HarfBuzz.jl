@@ -7,6 +7,8 @@ import HarfBuzz   # top level: used to probe system fonts for coverage
 # is known to exercise.
 const TEST_FONT = joinpath(@__DIR__, "fonts", "NotoSans-subset.ttf")
 const TEST_FONT_VAR = joinpath(@__DIR__, "fonts", "NotoSans-variable-subset.ttf")
+const TEST_FONT_MATH = joinpath(@__DIR__, "fonts", "NotoSansMath-subset.ttf")
+const TEST_FONT_COLOR = joinpath(@__DIR__, "fonts", "NotoColor-subset.ttf")
 
 # System fonts are still used, but only for coverage these cannot give
 # (CJK) or to check that arbitrary real-world files load. Those tests use
@@ -1010,6 +1012,188 @@ end
     @test !HarfBuzz.is_immutable(parent)
     HarfBuzz.make_immutable!(parent)
     @test HarfBuzz.is_immutable(parent)
+end
+
+# --- Phase 4: outlines ----------------------------------------------------
+
+@testitem "glyph outlines" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+
+    path = HarfBuzz.outline(font, a)
+    @test !isempty(path)
+    # An outline always opens with a move and closes what it opened.
+    @test path[1].op === :move_to
+    @test path[end].op === :close_path
+    @test count(c -> c.op === :move_to, path) ==
+          count(c -> c.op === :close_path, path)
+    @test all(c -> c.op in (:move_to, :line_to, :quadratic_to, :cubic_to,
+                            :close_path), path)
+
+    # The outline lies inside the glyph's reported extents.
+    e = HarfBuzz.glyph_extents(font, a)
+    xs = [p[1] for c in path for p in c.points]
+    @test minimum(xs) >= e.x_bearing - 1
+    @test maximum(xs) <= e.x_bearing + e.width + 1
+end
+
+@testitem "an empty glyph has an empty outline" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    space = HarfBuzz.get_nominal_glyph(font, UInt32(' '))
+    @test isempty(HarfBuzz.outline(font, space))
+end
+
+@testitem "draw_glyph feeds a callback" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+    ops = Symbol[]
+    HarfBuzz.draw_glyph(font, a) do op, points
+        push!(ops, op)
+    end
+    @test ops == [c.op for c in HarfBuzz.outline(font, a)]
+end
+
+# --- Phase 4: colour ------------------------------------------------------
+
+@testitem "colour capability flags" begin
+    import HarfBuzz
+    plain = HarfBuzz.Face(Main.TEST_FONT)
+    colour = HarfBuzz.Face(Main.TEST_FONT_COLOR)
+
+    @test !HarfBuzz.has_color_palettes(plain)
+    @test !HarfBuzz.has_color_paint(plain)
+
+    @test HarfBuzz.has_color_palettes(colour)
+    @test HarfBuzz.has_color_paint(colour)      # COLRv1
+    @test !HarfBuzz.has_color_png(colour)
+    @test !HarfBuzz.has_color_svg(colour)
+end
+
+@testitem "colour palettes" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT_COLOR)
+    @test HarfBuzz.color_palette_count(face) == 1
+
+    colors = HarfBuzz.color_palette(face, 0)
+    @test !isempty(colors)
+    @test eltype(colors) == HarfBuzz.Color
+    # Colours are opaque BGRA; at least one is fully opaque.
+    @test any(c -> c.alpha == 0xff, colors)
+    @test HarfBuzz.color_palette_flags(face, 0) isa Vector{Symbol}
+end
+
+@testitem "colour glyphs are recognised" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT_COLOR)
+    font = HarfBuzz.Font(face; size = 18)
+    grin = HarfBuzz.get_nominal_glyph(font, UInt32(0x1f600))
+    @test grin != 0
+    @test HarfBuzz.glyph_has_color_paint(face, grin)
+    # COLRv1 paints rather than layering, so there are no v0 layers.
+    @test isempty(HarfBuzz.glyph_color_layers(face, grin))
+end
+
+# --- Phase 4: math --------------------------------------------------------
+
+@testitem "math data" begin
+    import HarfBuzz
+    plain = HarfBuzz.Face(Main.TEST_FONT)
+    @test !HarfBuzz.has_math_data(plain)
+
+    face = HarfBuzz.Face(Main.TEST_FONT_MATH)
+    @test HarfBuzz.has_math_data(face)
+    font = HarfBuzz.Font(face; size = 18)
+
+    @test HarfBuzz.math_constant(font, :axis_height) > 0
+    @test HarfBuzz.math_constant(font, :fraction_rule_thickness) > 0
+    @test_throws ArgumentError HarfBuzz.math_constant(font, :not_a_constant)
+
+    @test HarfBuzz.math_min_connector_overlap(font) >= 0
+end
+
+@testitem "math glyph queries" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT_MATH)
+    font = HarfBuzz.Font(face; size = 18)
+    paren = HarfBuzz.get_nominal_glyph(font, UInt32('('))
+    @test paren != 0
+
+    @test HarfBuzz.math_italics_correction(font, paren) isa Integer
+    @test HarfBuzz.math_top_accent_attachment(font, paren) isa Integer
+    @test HarfBuzz.is_math_extended_shape(face, paren) isa Bool
+
+    # A parenthesis stretches vertically: it has larger variants, an
+    # assembly, or both.
+    variants = HarfBuzz.math_glyph_variants(font, paren; direction = :ttb)
+    assembly = HarfBuzz.math_glyph_assembly(font, paren; direction = :ttb)
+    @test !isempty(variants) || !isempty(assembly.parts)
+    isempty(variants) || @test all(v -> haskey(v, :glyph), variants)
+end
+
+# --- Phase 4: subsetting --------------------------------------------------
+
+@testitem "subsetting a face" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    before = HarfBuzz.unicodes(face)
+    @test length(before) > 10
+
+    small = HarfBuzz.subset(face; unicodes = UInt32.(['A', 'B', 'C']))
+    @test small isa HarfBuzz.Face
+    after = HarfBuzz.unicodes(small)
+    @test after == Set(UInt32.(['A', 'B', 'C']))
+    @test HarfBuzz.glyph_count(small) < HarfBuzz.glyph_count(face)
+
+    # The result is a real font: it still shapes.
+    font = HarfBuzz.Font(small; size = 18)
+    @test length(HarfBuzz.shape(font, "ABC").infos) == 3
+end
+
+@testitem "subsetting keeps glyph names when asked" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    bare = HarfBuzz.Font(HarfBuzz.subset(face; unicodes = UInt32.(['A'])); size = 18)
+    named = HarfBuzz.Font(
+        HarfBuzz.subset(face; unicodes = UInt32.(['A']), flags = [:glyph_names]);
+        size = 18)
+    a_bare = HarfBuzz.get_nominal_glyph(bare, UInt32('A'))
+    a_named = HarfBuzz.get_nominal_glyph(named, UInt32('A'))
+    @test HarfBuzz.glyph_name(named, a_named) == "A"
+    @test HarfBuzz.glyph_name(bare, a_bare) === nothing
+    @test_throws ArgumentError HarfBuzz.subset(face; flags = [:nope])
+end
+
+# --- Phase 4: Unicode data ------------------------------------------------
+
+@testitem "Unicode properties" begin
+    import HarfBuzz
+    @test HarfBuzz.script_of(UInt32('A')) == :Latn
+    @test HarfBuzz.script_of(UInt32(0x0645)) == :Arab      # م
+    @test HarfBuzz.script_of(UInt32(0x6f22)) == :Hani      # 漢
+
+    @test HarfBuzz.general_category(UInt32('A')) == :uppercase_letter
+    @test HarfBuzz.general_category(UInt32('1')) == :decimal_number
+    @test HarfBuzz.general_category(UInt32(' ')) == :space_separator
+
+    @test HarfBuzz.combining_class(UInt32('a')) == 0
+    @test HarfBuzz.combining_class(UInt32(0x0301)) == 230  # combining acute
+
+    @test HarfBuzz.mirroring(UInt32('(')) == UInt32(')')
+    @test HarfBuzz.mirroring(UInt32('A')) == UInt32('A')
+end
+
+@testitem "Unicode composition" begin
+    import HarfBuzz
+    # e + combining acute composes to é, and back.
+    @test HarfBuzz.compose(UInt32('e'), UInt32(0x0301)) == UInt32('é')
+    @test HarfBuzz.compose(UInt32('e'), UInt32('e')) === nothing
+
+    d = HarfBuzz.decompose(UInt32('é'))
+    @test d == (UInt32('e'), UInt32(0x0301))
+    @test HarfBuzz.decompose(UInt32('A')) === nothing
 end
 
 # --- Phase 0 regression tests --------------------------------------------

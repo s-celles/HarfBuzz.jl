@@ -106,3 +106,58 @@ HarfBuzz.synthetic_bold
 HarfBuzz.is_synthetic
 HarfBuzz.make_immutable!
 ```
+
+## Outlines
+
+```@docs
+HarfBuzz.outline
+HarfBuzz.draw_glyph
+HarfBuzz.PathCommand
+```
+
+## Colour
+
+```@docs
+HarfBuzz.has_color_palettes
+HarfBuzz.color_palette_count
+HarfBuzz.color_palette
+HarfBuzz.color_palette_flags
+HarfBuzz.glyph_color_layers
+HarfBuzz.glyph_has_color_paint
+HarfBuzz.glyph_color_png
+HarfBuzz.Color
+```
+
+## Math
+
+```@docs
+HarfBuzz.has_math_data
+HarfBuzz.math_constant
+HarfBuzz.math_italics_correction
+HarfBuzz.math_top_accent_attachment
+HarfBuzz.is_math_extended_shape
+HarfBuzz.math_min_connector_overlap
+HarfBuzz.math_glyph_variants
+HarfBuzz.math_glyph_assembly
+```
+
+## Subsetting
+
+```@docs
+HarfBuzz.subset
+```
+
+## Unicode data
+
+HarfBuzz ships its own Unicode tables — the ones shaping itself uses. They
+are exposed so that code doing its own segmentation gets the same answers
+the shaper did.
+
+```@docs
+HarfBuzz.script_of
+HarfBuzz.general_category
+HarfBuzz.combining_class
+HarfBuzz.mirroring
+HarfBuzz.compose
+HarfBuzz.decompose
+```

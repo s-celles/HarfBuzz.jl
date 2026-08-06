@@ -72,6 +72,20 @@ now stands rather than a trail of intermediate API changes.
 - Font state: `sub_font`, `synthetic_bold`/`synthetic_bold!`,
   `synthetic_slant`/`synthetic_slant!`, `is_synthetic`, `make_immutable!`,
   `is_immutable`.
+- Glyph outlines: `outline(font, glyph)` as path commands, and the
+  callback form `draw_glyph`, with `PathCommand`.
+- Colour fonts: `has_color_palettes`/`_layers`/`_paint`/`_png`/`_svg`,
+  `color_palette_count`, `color_palette`, `color_palette_flags`,
+  `glyph_color_layers`, `glyph_has_color_paint`, `glyph_color_png`,
+  `glyph_color_svg`, with a `Color` struct.
+- Math typesetting: `has_math_data`, `math_constant` over all 56 constants,
+  `math_italics_correction`, `math_top_accent_attachment`,
+  `is_math_extended_shape`, `math_min_connector_overlap`,
+  `math_glyph_variants`, `math_glyph_assembly`.
+- `subset(face; unicodes, glyphs, flags)`, over `libharfbuzz-subset`.
+- HarfBuzz's Unicode data — the tables shaping itself uses: `script_of`,
+  `general_category`, `combining_class`, `mirroring`, `compose`,
+  `decompose`.
 - Library helpers: `version`, `version_string`, `tag`, `tag_string`.
 - `ROADMAP.md`: gap analysis against the HarfBuzz C API and the official
   bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs, luaharfbuzz), phased plan,

@@ -115,6 +115,11 @@ pass the resulting path.
 | `serialize`, `deserialize!`, `diff` | Golden-test support |
 | `message_func!` | Trace shaping stages |
 | `has_glyph`, `get_nominal_glyph` | Glyph availability |
+| `outline`, `draw_glyph` | Glyph outlines as paths |
+| `color_palette`, `glyph_has_color_paint` | COLR/CPAL colour |
+| `math_constant`, `math_glyph_variants` | Math typesetting |
+| `subset(face; unicodes)` | Cut a font down |
+| `script_of`, `general_category`, `compose` | HarfBuzz's Unicode data |
 | `version`, `shapers`, `tag`, `tag_string` | Library helpers |
 
 See the [documentation](https://s-celles.github.io/HarfBuzz.jl/dev/) for

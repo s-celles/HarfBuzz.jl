@@ -16,20 +16,20 @@ Reference points used for the gap analysis:
 
 ## Status
 
-`HarfBuzz.jl` binds **119 of the 508 `hb_*` symbols** exported by
-`libharfbuzz` in the JLL. `libharfbuzz-subset` and `libharfbuzz-gobject` ship
-in the same artifact and are unused.
+`HarfBuzz.jl` binds **162 of the 508 `hb_*` symbols** exported by
+`libharfbuzz` in the JLL, plus the subsetting entry points in
+`libharfbuzz-subset`. Only `libharfbuzz-gobject`, which exists for GObject
+introspection bindings, goes unused.
 
-Phases 0 to 3 are done: the defects that made shaping silently incorrect
-are fixed, the `Blob → Face → Font` chain is in place with HarfBuzz's own
-table reader as the default metrics source (so the package depends only on
-`HarfBuzz_jll`), the buffer API drives shaping properly — segment
-properties, glyph flags, serialization — and fonts and faces can be
-queried: metrics, glyph names, the name table, OpenType metrics and style,
-variation axes, and layout introspection.
+All four phases are done. Shaping is correct and complete, the
+`Blob → Face → Font` chain uses HarfBuzz's own table reader by default (so
+the package depends only on `HarfBuzz_jll`), buffers expose segment
+properties, glyph flags and serialization, fonts and faces can be queried
+down to variation axes and layout tables, and outlines, colour, math,
+subsetting and Unicode data are all reachable.
 
-What remains is Phase 4: colour, outline and paint extraction, math, and
-subsetting.
+What is left is judgement calls rather than coverage: the open questions
+below, and `hb_paint_funcs_t`, which Phase 4 deliberately leaves alone.
 
 ## Phase 0 — Correctness — **done**
 
@@ -250,22 +250,45 @@ Not done, and cheap to add when something needs them:
 `hb_ot_layout_collect_lookups`, `hb_ot_layout_lookup_get_glyph_alternates`,
 custom `hb_font_funcs_t`.
 
-## Phase 4 — Beyond shaping
+## Phase 4 — Beyond shaping — **done**
 
-- **`hb-ot-color`**: COLR/CPAL palettes, `glyph_get_png`, `glyph_get_svg`,
-  `has_paint`. This is what actual colour emoji rendering needs, and colour
-  emoji is the package's stated motivation.
-- **`draw` / `paint`**: `hb_font_draw_glyph` with `hb_draw_funcs_t` (outline
-  extraction to a callback-based path) and `hb_font_paint_glyph` with
-  `hb_paint_funcs_t`. `uharfbuzz` additionally exposes a fontTools-compatible
-  pen protocol; a Julia equivalent could target existing plotting/graphics
-  packages.
-- **`hb-ot-math`**: constants, glyph variants, assemblies, italics
-  correction, math kerning. Relevant to a scientific ecosystem.
-- **Subsetting**: `hb_subset`, `SubsetInput`, `SubsetPlan`, the repacker.
-  `libharfbuzz_subset` already ships in the JLL.
-- **`hb_unicode_funcs_t`**: script, combining class, mirroring, decomposition
-  — exposes HarfBuzz's own Unicode data.
+Shipped:
+
+- **Outlines**: `outline(font, glyph)` returning path commands, and the
+  callback form `draw_glyph(f, font, glyph)` over `hb_draw_funcs_t`. This
+  is what a Julia renderer needs to draw text itself.
+- **`hb-ot-color`**: `has_color_palettes` / `_layers` / `_paint` / `_png` /
+  `_svg`, `color_palette_count`, `color_palette`, `color_palette_flags`,
+  `glyph_color_layers`, `glyph_has_color_paint`, `glyph_color_png`,
+  `glyph_color_svg`, with a `Color` struct.
+- **`hb-ot-math`**: `has_math_data`, `math_constant` over all 56 constants,
+  `math_italics_correction`, `math_top_accent_attachment`,
+  `is_math_extended_shape`, `math_min_connector_overlap`,
+  `math_glyph_variants`, `math_glyph_assembly`.
+- **Subsetting**: `subset(face; unicodes, glyphs, flags)`, over
+  `libharfbuzz-subset` — which the JLL had always shipped and nothing used.
+  The vendored test fonts are now produced by the package itself.
+- **`hb_unicode_funcs_t`**: `script_of`, `general_category`,
+  `combining_class`, `mirroring`, `compose`, `decompose`, from HarfBuzz's
+  own Unicode tables — the same ones shaping uses.
+
+Two more vendored fonts were needed, as anticipated:
+`NotoSansMath-subset.ttf` (25 KB, `MATH`) and `NotoColor-subset.ttf`
+(6 KB, COLR/CPAL with COLRv1 paint). Both OFL, both without a Reserved
+Font Name.
+
+**Paint is deliberately not wrapped.** `hb_paint_funcs_t` is a far larger
+surface than `hb_draw_funcs_t`: colour lines, four gradient kinds, affine
+transforms, clips, and Porter-Duff composite modes, all as callbacks whose
+output is only useful to a renderer that already has an equivalent model.
+Wrapping it faithfully means designing a Julia colour/paint vocabulary,
+which belongs with the renderer that needs it rather than in the binding.
+`glyph_has_color_paint` and `glyph_color_png` cover the practical cases in
+the meantime.
+
+Also not done, and cheap when needed: `hb_ot_math_get_glyph_kerning`,
+`hb_subset_plan_*`, the repacker, `hb_subset_input_set_axis_range`
+(instancing a variable font), and custom `hb_unicode_funcs_t`.
 
 ## Ergonomics (throughout)
 

@@ -1958,6 +1958,632 @@ end
 is_immutable(f::Font)::Bool =
     ccall((:hb_font_is_immutable, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
 
+# --- Unicode data ---------------------------------------------------------
+
+# HarfBuzz's own Unicode tables, which shaping uses. Exposed because a
+# caller doing its own segmentation needs the same answers the shaper used.
+_unicode_funcs() = ccall((:hb_unicode_funcs_get_default, libhb), Ptr{Cvoid}, ())
+
+"""
+    script_of(codepoint) -> Symbol
+
+The codepoint's script, as an ISO 15924 tag such as `:Latn` or `:Arab`.
+"""
+script_of(cp::Integer)::Symbol = _script_symbol(
+    ccall((:hb_unicode_script, libhb), UInt32,
+          (Ptr{Cvoid}, UInt32), _unicode_funcs(), UInt32(cp)))
+
+const _GENERAL_CATEGORIES = (
+    :control, :format, :unassigned, :private_use, :surrogate,
+    :lowercase_letter, :modifier_letter, :other_letter, :titlecase_letter,
+    :uppercase_letter, :spacing_mark, :enclosing_mark, :non_spacing_mark,
+    :decimal_number, :letter_number, :other_number, :connect_punctuation,
+    :dash_punctuation, :close_punctuation, :final_punctuation,
+    :initial_punctuation, :other_punctuation, :open_punctuation,
+    :currency_symbol, :modifier_symbol, :math_symbol, :other_symbol,
+    :line_separator, :paragraph_separator, :space_separator,
+)
+
+"""
+    general_category(codepoint) -> Symbol
+
+The codepoint's Unicode general category, e.g. `:uppercase_letter`,
+`:decimal_number`, `:non_spacing_mark`.
+"""
+function general_category(cp::Integer)::Symbol
+    v = ccall((:hb_unicode_general_category, libhb), Cint,
+              (Ptr{Cvoid}, UInt32), _unicode_funcs(), UInt32(cp))
+    return 0 <= v < length(_GENERAL_CATEGORIES) ?
+           _GENERAL_CATEGORIES[v + 1] : :unassigned
+end
+
+"""
+    combining_class(codepoint) -> Int
+
+The canonical combining class. 0 for a base character, 230 for a mark
+above, and so on.
+"""
+combining_class(cp::Integer)::Int = Int(
+    ccall((:hb_unicode_combining_class, libhb), Cint,
+          (Ptr{Cvoid}, UInt32), _unicode_funcs(), UInt32(cp)))
+
+"""
+    mirroring(codepoint) -> UInt32
+
+The codepoint's mirror image in right-to-left text — `(` becomes `)`.
+Returns the codepoint itself when it has no mirror.
+"""
+mirroring(cp::Integer)::UInt32 =
+    ccall((:hb_unicode_mirroring, libhb), UInt32,
+          (Ptr{Cvoid}, UInt32), _unicode_funcs(), UInt32(cp))
+
+"""
+    compose(a, b) -> Union{UInt32,Nothing}
+
+Canonical composition: `compose('e', 0x0301)` is `'é'`. `nothing` when the
+pair does not compose.
+"""
+function compose(a::Integer, b::Integer)::Union{UInt32,Nothing}
+    out = Ref{UInt32}(0)
+    ok = ccall((:hb_unicode_compose, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, UInt32, Ref{UInt32}),
+               _unicode_funcs(), UInt32(a), UInt32(b), out)
+    return ok != 0 ? out[] : nothing
+end
+
+"""
+    decompose(codepoint) -> Union{Tuple{UInt32,UInt32},Nothing}
+
+Canonical decomposition, the inverse of [`compose`](@ref). `nothing` when
+the codepoint does not decompose.
+"""
+function decompose(cp::Integer)::Union{Tuple{UInt32,UInt32},Nothing}
+    a = Ref{UInt32}(0); b = Ref{UInt32}(0)
+    ok = ccall((:hb_unicode_decompose, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, Ref{UInt32}, Ref{UInt32}),
+               _unicode_funcs(), UInt32(cp), a, b)
+    return ok != 0 ? (a[], b[]) : nothing
+end
+
+# --- Outlines -------------------------------------------------------------
+
+"""
+    PathCommand
+
+One step of a glyph outline: an `op` (`:move_to`, `:line_to`,
+`:quadratic_to`, `:cubic_to` or `:close_path`) and its control points, in
+the font's scale units.
+
+`:quadratic_to` carries one control point then the endpoint; `:cubic_to`
+two control points then the endpoint; `:close_path` none.
+"""
+struct PathCommand
+    op::Symbol
+    points::Vector{Tuple{Float64,Float64}}
+end
+
+# The draw callbacks push into this, reached through `draw_data`.
+mutable struct _DrawSink
+    sink::Any
+end
+
+for (name, op, npoints) in ((:_draw_move_to, :move_to, 1),
+                            (:_draw_line_to, :line_to, 1))
+    @eval function $name(::Ptr{Cvoid}, draw_data::Ptr{Cvoid}, ::Ptr{Cvoid},
+                         x::Cfloat, y::Cfloat, ::Ptr{Cvoid})::Cvoid
+        try
+            s = unsafe_pointer_to_objref(draw_data)::_DrawSink
+            s.sink($(QuoteNode(op)), [(Float64(x), Float64(y))])
+        catch
+        end
+        return nothing
+    end
+end
+
+function _draw_quadratic_to(::Ptr{Cvoid}, draw_data::Ptr{Cvoid}, ::Ptr{Cvoid},
+                            cx::Cfloat, cy::Cfloat, x::Cfloat, y::Cfloat,
+                            ::Ptr{Cvoid})::Cvoid
+    try
+        s = unsafe_pointer_to_objref(draw_data)::_DrawSink
+        s.sink(:quadratic_to, [(Float64(cx), Float64(cy)), (Float64(x), Float64(y))])
+    catch
+    end
+    return nothing
+end
+
+function _draw_cubic_to(::Ptr{Cvoid}, draw_data::Ptr{Cvoid}, ::Ptr{Cvoid},
+                        c1x::Cfloat, c1y::Cfloat, c2x::Cfloat, c2y::Cfloat,
+                        x::Cfloat, y::Cfloat, ::Ptr{Cvoid})::Cvoid
+    try
+        s = unsafe_pointer_to_objref(draw_data)::_DrawSink
+        s.sink(:cubic_to, [(Float64(c1x), Float64(c1y)),
+                           (Float64(c2x), Float64(c2y)),
+                           (Float64(x), Float64(y))])
+    catch
+    end
+    return nothing
+end
+
+function _draw_close_path(::Ptr{Cvoid}, draw_data::Ptr{Cvoid}, ::Ptr{Cvoid},
+                          ::Ptr{Cvoid})::Cvoid
+    try
+        s = unsafe_pointer_to_objref(draw_data)::_DrawSink
+        s.sink(:close_path, Tuple{Float64,Float64}[])
+    catch
+    end
+    return nothing
+end
+
+const _DRAW_FUNCS = Ref{Ptr{Cvoid}}(C_NULL)
+
+function _init_draw_funcs()
+    dfuncs = ccall((:hb_draw_funcs_create, libhb), Ptr{Cvoid}, ())
+    dfuncs == C_NULL && throw(ErrorException("hb_draw_funcs_create failed"))
+    ccall((:hb_draw_funcs_set_move_to_func, libhb), Cvoid,
+          (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), dfuncs,
+          @cfunction(_draw_move_to, Cvoid,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cfloat, Cfloat, Ptr{Cvoid})),
+          C_NULL, C_NULL)
+    ccall((:hb_draw_funcs_set_line_to_func, libhb), Cvoid,
+          (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), dfuncs,
+          @cfunction(_draw_line_to, Cvoid,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cfloat, Cfloat, Ptr{Cvoid})),
+          C_NULL, C_NULL)
+    ccall((:hb_draw_funcs_set_quadratic_to_func, libhb), Cvoid,
+          (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), dfuncs,
+          @cfunction(_draw_quadratic_to, Cvoid,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cfloat, Cfloat,
+                      Cfloat, Cfloat, Ptr{Cvoid})),
+          C_NULL, C_NULL)
+    ccall((:hb_draw_funcs_set_cubic_to_func, libhb), Cvoid,
+          (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), dfuncs,
+          @cfunction(_draw_cubic_to, Cvoid,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cfloat, Cfloat,
+                      Cfloat, Cfloat, Cfloat, Cfloat, Ptr{Cvoid})),
+          C_NULL, C_NULL)
+    ccall((:hb_draw_funcs_set_close_path_func, libhb), Cvoid,
+          (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), dfuncs,
+          @cfunction(_draw_close_path, Cvoid,
+                     (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid})),
+          C_NULL, C_NULL)
+    ccall((:hb_draw_funcs_make_immutable, libhb), Cvoid, (Ptr{Cvoid},), dfuncs)
+    _DRAW_FUNCS[] = dfuncs
+    return nothing
+end
+
+"""
+    draw_glyph(f, font::Font, glyph)
+
+Walk a glyph's outline, calling `f(op, points)` for each step. `op` is
+`:move_to`, `:line_to`, `:quadratic_to`, `:cubic_to` or `:close_path`, and
+`points` are in the font's scale units.
+
+```julia
+draw_glyph(font, gid) do op, points
+    op === :move_to && move(points[1]...)
+end
+```
+"""
+function draw_glyph(f, font::Font, glyph::Integer)
+    sink = _DrawSink(f)
+    GC.@preserve sink begin
+        ccall((:hb_font_draw_glyph, libhb), Cvoid,
+              (Ptr{Cvoid}, UInt32, Ptr{Cvoid}, Ptr{Cvoid}),
+              font.ptr, UInt32(glyph), _DRAW_FUNCS[], pointer_from_objref(sink))
+    end
+    return nothing
+end
+
+"""
+    outline(font::Font, glyph) -> Vector{PathCommand}
+
+The glyph's outline as a list of path commands. Empty for a glyph that
+draws nothing, such as a space.
+
+```julia
+for cmd in outline(font, gid)
+    cmd.op === :line_to && println(cmd.points[1])
+end
+```
+"""
+function outline(font::Font, glyph::Integer)::Vector{PathCommand}
+    path = PathCommand[]
+    draw_glyph(font, glyph) do op, points
+        push!(path, PathCommand(op, points))
+    end
+    return path
+end
+
+# --- Colour ---------------------------------------------------------------
+
+"""
+    Color
+
+One entry of a CPAL palette. HarfBuzz stores colours as BGRA; the fields
+here are the usual four channels.
+"""
+struct Color
+    blue::UInt8
+    green::UInt8
+    red::UInt8
+    alpha::UInt8
+end
+
+"""
+    has_color_palettes(face::Face) -> Bool
+    has_color_layers(face::Face) -> Bool
+    has_color_paint(face::Face) -> Bool
+    has_color_png(face::Face) -> Bool
+    has_color_svg(face::Face) -> Bool
+
+Which colour mechanisms a face carries: CPAL palettes, COLRv0 layers,
+COLRv1 paint graphs, embedded PNG bitmaps (CBDT), or SVG documents.
+"""
+has_color_palettes(f::Face)::Bool =
+    ccall((:hb_ot_color_has_palettes, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+has_color_layers(f::Face)::Bool =
+    ccall((:hb_ot_color_has_layers, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+has_color_paint(f::Face)::Bool =
+    ccall((:hb_ot_color_has_paint, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+has_color_png(f::Face)::Bool =
+    ccall((:hb_ot_color_has_png, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+has_color_svg(f::Face)::Bool =
+    ccall((:hb_ot_color_has_svg, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+"""
+    color_palette_count(face::Face) -> Int
+
+How many CPAL palettes the face offers.
+"""
+color_palette_count(f::Face)::Int = Int(
+    ccall((:hb_ot_color_palette_get_count, libhb), Cuint, (Ptr{Cvoid},), f.ptr))
+
+"""
+    color_palette(face::Face, index = 0) -> Vector{Color}
+
+The colours of one palette.
+"""
+function color_palette(f::Face, index::Integer = 0)::Vector{Color}
+    n = Ref{Cuint}(0)
+    # Probing with a NULL array returns the total in the return value and
+    # leaves the count untouched, so read the former.
+    count = Int(ccall((:hb_ot_color_palette_get_colors, libhb), Cuint,
+                      (Ptr{Cvoid}, Cuint, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+                      f.ptr, Cuint(index), Cuint(0), n, C_NULL))
+    count == 0 && return Color[]
+    n[] = Cuint(count)
+    out = Vector{Color}(undef, count)
+    GC.@preserve out begin
+        ccall((:hb_ot_color_palette_get_colors, libhb), Cuint,
+              (Ptr{Cvoid}, Cuint, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+              f.ptr, Cuint(index), Cuint(0), n, pointer(out))
+    end
+    return out[1:Int(n[])]
+end
+
+const _PALETTE_FLAGS = (
+    :usable_with_light_background => UInt32(0x0001),
+    :usable_with_dark_background => UInt32(0x0002),
+)
+
+"""
+    color_palette_flags(face::Face, index = 0) -> Vector{Symbol}
+
+What the font says a palette is suitable for:
+`:usable_with_light_background`, `:usable_with_dark_background`, or
+neither.
+"""
+color_palette_flags(f::Face, index::Integer = 0)::Vector{Symbol} =
+    _flags_symbols(ccall((:hb_ot_color_palette_get_flags, libhb), Cuint,
+                         (Ptr{Cvoid}, Cuint), f.ptr, Cuint(index)),
+                   _PALETTE_FLAGS)
+
+struct _HbOtColorLayerRaw
+    glyph::UInt32
+    color_index::UInt32
+end
+
+"""
+    glyph_color_layers(face::Face, glyph) -> Vector{NamedTuple}
+
+The COLRv0 layers of a glyph, each `(glyph, color_index)`. Empty for a
+font that paints through COLRv1 instead.
+"""
+function glyph_color_layers(f::Face, glyph::Integer)
+    n = Ref{Cuint}(0)
+    count = Int(ccall((:hb_ot_color_glyph_get_layers, libhb), Cuint,
+                      (Ptr{Cvoid}, UInt32, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+                      f.ptr, UInt32(glyph), Cuint(0), n, C_NULL))
+    count == 0 && return NamedTuple[]
+    n[] = Cuint(count)
+    buf = Vector{_HbOtColorLayerRaw}(undef, count)
+    GC.@preserve buf begin
+        ccall((:hb_ot_color_glyph_get_layers, libhb), Cuint,
+              (Ptr{Cvoid}, UInt32, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+              f.ptr, UInt32(glyph), Cuint(0), n, pointer(buf))
+    end
+    return [(glyph = Int(l.glyph), color_index = Int(l.color_index))
+            for l in buf[1:Int(n[])]]
+end
+
+"""
+    glyph_has_color_paint(face::Face, glyph) -> Bool
+
+True when the glyph has a COLRv1 paint graph.
+"""
+glyph_has_color_paint(f::Face, glyph::Integer)::Bool =
+    ccall((:hb_ot_color_glyph_has_paint, libhb), Cint,
+          (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph)) != 0
+
+"""
+    glyph_color_png(font::Font, glyph) -> Blob
+    glyph_color_svg(face::Face, glyph) -> Blob
+
+The embedded PNG or SVG document for a colour glyph. The blob is empty
+when the font carries none.
+"""
+function glyph_color_png(font::Font, glyph::Integer)::Blob
+    ptr = ccall((:hb_ot_color_glyph_reference_png, libhb), Ptr{Cvoid},
+                (Ptr{Cvoid}, UInt32), font.ptr, UInt32(glyph))
+    blob = Blob(ptr, nothing)
+    finalizer(_blob_destroy, blob)
+    return blob
+end
+
+function glyph_color_svg(f::Face, glyph::Integer)::Blob
+    ptr = ccall((:hb_ot_color_glyph_reference_svg, libhb), Ptr{Cvoid},
+                (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph))
+    blob = Blob(ptr, nothing)
+    finalizer(_blob_destroy, blob)
+    return blob
+end
+
+# --- Math -----------------------------------------------------------------
+
+const _MATH_CONSTANTS = (
+    :script_percent_scale_down, :script_script_percent_scale_down,
+    :delimited_sub_formula_min_height, :display_operator_min_height,
+    :math_leading, :axis_height, :accent_base_height,
+    :flattened_accent_base_height, :subscript_shift_down,
+    :subscript_top_max, :subscript_baseline_drop_min, :superscript_shift_up,
+    :superscript_shift_up_cramped, :superscript_bottom_min,
+    :superscript_baseline_drop_max, :sub_superscript_gap_min,
+    :superscript_bottom_max_with_subscript, :space_after_script,
+    :upper_limit_gap_min, :upper_limit_baseline_rise_min,
+    :lower_limit_gap_min, :lower_limit_baseline_drop_min, :stack_top_shift_up,
+    :stack_top_display_style_shift_up, :stack_bottom_shift_down,
+    :stack_bottom_display_style_shift_down, :stack_gap_min,
+    :stack_display_style_gap_min, :stretch_stack_top_shift_up,
+    :stretch_stack_bottom_shift_down, :stretch_stack_gap_above_min,
+    :stretch_stack_gap_below_min, :fraction_numerator_shift_up,
+    :fraction_numerator_display_style_shift_up,
+    :fraction_denominator_shift_down,
+    :fraction_denominator_display_style_shift_down,
+    :fraction_numerator_gap_min, :fraction_num_display_style_gap_min,
+    :fraction_rule_thickness, :fraction_denominator_gap_min,
+    :fraction_denom_display_style_gap_min, :skewed_fraction_horizontal_gap,
+    :skewed_fraction_vertical_gap, :overbar_vertical_gap,
+    :overbar_rule_thickness, :overbar_extra_ascender, :underbar_vertical_gap,
+    :underbar_rule_thickness, :underbar_extra_descender, :radical_vertical_gap,
+    :radical_display_style_vertical_gap, :radical_rule_thickness,
+    :radical_extra_ascender, :radical_kern_before_degree,
+    :radical_kern_after_degree, :radical_degree_bottom_raise_percent,
+)
+
+"""
+    has_math_data(face::Face) -> Bool
+
+True when the face carries a `MATH` table.
+"""
+has_math_data(f::Face)::Bool =
+    ccall((:hb_ot_math_has_data, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+"""
+    math_constant(font::Font, name::Symbol) -> Int32
+
+One of the `MATH` table's layout constants, such as `:axis_height`,
+`:fraction_rule_thickness` or `:radical_rule_thickness`. Percentages come
+back as integers; everything else is in the font's scale units.
+"""
+function math_constant(f::Font, name::Symbol)::Int32
+    i = findfirst(==(name), _MATH_CONSTANTS)
+    i === nothing && throw(ArgumentError(
+        "unknown math constant :$name; see HarfBuzz's hb_ot_math_constant_t"))
+    return ccall((:hb_ot_math_get_constant, libhb), Int32,
+                 (Ptr{Cvoid}, Cint), f.ptr, Cint(i - 1))
+end
+
+"""
+    math_italics_correction(font::Font, glyph) -> Int32
+
+Space to add after a slanted glyph so a following subscript does not
+collide with it.
+"""
+math_italics_correction(f::Font, glyph::Integer)::Int32 =
+    ccall((:hb_ot_math_get_glyph_italics_correction, libhb), Int32,
+          (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph))
+
+"""
+    math_top_accent_attachment(font::Font, glyph) -> Int32
+
+Horizontal position an accent should be centred on.
+"""
+math_top_accent_attachment(f::Font, glyph::Integer)::Int32 =
+    ccall((:hb_ot_math_get_glyph_top_accent_attachment, libhb), Int32,
+          (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph))
+
+"""
+    is_math_extended_shape(face::Face, glyph) -> Bool
+
+True for glyphs that grow with the formula, such as big parentheses.
+"""
+is_math_extended_shape(f::Face, glyph::Integer)::Bool =
+    ccall((:hb_ot_math_is_glyph_extended_shape, libhb), Cint,
+          (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph)) != 0
+
+"""
+    math_min_connector_overlap(font::Font; direction = :ttb) -> Int32
+
+Minimum overlap between the pieces of an assembled stretchy glyph.
+"""
+math_min_connector_overlap(f::Font; direction::Symbol = :ttb)::Int32 =
+    ccall((:hb_ot_math_get_min_connector_overlap, libhb), Int32,
+          (Ptr{Cvoid}, Cint), f.ptr, _direction_value(direction))
+
+struct _HbOtMathGlyphVariantRaw
+    glyph::UInt32
+    advance::Int32
+end
+
+struct _HbOtMathGlyphPartRaw
+    glyph::UInt32
+    start_connector_length::Int32
+    end_connector_length::Int32
+    full_advance::Int32
+    flags::UInt32
+end
+
+"""
+    math_glyph_variants(font::Font, glyph; direction = :ttb) -> Vector{NamedTuple}
+
+The ready-made larger versions of a stretchy glyph, each
+`(glyph, advance)`, in increasing size.
+"""
+function math_glyph_variants(f::Font, glyph::Integer; direction::Symbol = :ttb)
+    n = Ref{Cuint}(0)
+    total = ccall((:hb_ot_math_get_glyph_variants, libhb), Cuint,
+                  (Ptr{Cvoid}, UInt32, Cint, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+                  f.ptr, UInt32(glyph), _direction_value(direction),
+                  Cuint(0), n, C_NULL)
+    total == 0 && return NamedTuple[]
+    buf = Vector{_HbOtMathGlyphVariantRaw}(undef, Int(total))
+    n[] = Cuint(total)
+    GC.@preserve buf begin
+        ccall((:hb_ot_math_get_glyph_variants, libhb), Cuint,
+              (Ptr{Cvoid}, UInt32, Cint, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+              f.ptr, UInt32(glyph), _direction_value(direction),
+              Cuint(0), n, pointer(buf))
+    end
+    return [(glyph = Int(v.glyph), advance = v.advance) for v in buf[1:Int(n[])]]
+end
+
+"""
+    math_glyph_assembly(font::Font, glyph; direction = :ttb) -> NamedTuple
+
+How to build an arbitrarily large version of a stretchy glyph out of
+pieces: `(parts, italics_correction)`, where each part is
+`(glyph, start_connector_length, end_connector_length, full_advance,
+extender)`.
+"""
+function math_glyph_assembly(f::Font, glyph::Integer; direction::Symbol = :ttb)
+    n = Ref{Cuint}(0)
+    italics = Ref{Int32}(0)
+    total = ccall((:hb_ot_math_get_glyph_assembly, libhb), Cuint,
+                  (Ptr{Cvoid}, UInt32, Cint, Cuint, Ref{Cuint}, Ptr{Cvoid},
+                   Ref{Int32}),
+                  f.ptr, UInt32(glyph), _direction_value(direction),
+                  Cuint(0), n, C_NULL, italics)
+    total == 0 && return (parts = NamedTuple[], italics_correction = italics[])
+    buf = Vector{_HbOtMathGlyphPartRaw}(undef, Int(total))
+    n[] = Cuint(total)
+    GC.@preserve buf begin
+        ccall((:hb_ot_math_get_glyph_assembly, libhb), Cuint,
+              (Ptr{Cvoid}, UInt32, Cint, Cuint, Ref{Cuint}, Ptr{Cvoid},
+               Ref{Int32}),
+              f.ptr, UInt32(glyph), _direction_value(direction),
+              Cuint(0), n, pointer(buf), italics)
+    end
+    parts = [(glyph = Int(p.glyph),
+              start_connector_length = p.start_connector_length,
+              end_connector_length = p.end_connector_length,
+              full_advance = p.full_advance,
+              extender = p.flags & 0x1 != 0) for p in buf[1:Int(n[])]]
+    return (parts = parts, italics_correction = italics[])
+end
+
+# --- Subsetting -----------------------------------------------------------
+
+const libhb_subset = HarfBuzz_jll.libharfbuzz_subset_path
+
+const _SUBSET_FLAGS = (
+    :no_hinting => UInt32(0x0001),
+    :retain_gids => UInt32(0x0002),
+    :desubroutinize => UInt32(0x0004),
+    :name_legacy => UInt32(0x0008),
+    :set_overlaps_flag => UInt32(0x0010),
+    :passthrough_unrecognized => UInt32(0x0020),
+    :notdef_outline => UInt32(0x0040),
+    :glyph_names => UInt32(0x0080),
+    :no_prune_unicode_ranges => UInt32(0x0100),
+    :no_layout_closure => UInt32(0x0200),
+    :optimize_iup_deltas => UInt32(0x0400),
+)
+
+"""
+    subset(face::Face; unicodes = nothing, glyphs = nothing,
+           flags = Symbol[]) -> Face
+
+Cut a face down to the codepoints or glyphs given, returning a new face
+backed by freshly generated font data.
+
+Flags: $(join(map(p -> ":" * String(p.first), _SUBSET_FLAGS), ", ")).
+`:glyph_names` is worth knowing about — without it the `post` table's
+glyph names are dropped, so [`glyph_name`](@ref) returns `nothing` on the
+result.
+
+```julia
+small = subset(face; unicodes = UInt32.(collect("Hello")))
+write("hello.ttf", data(small._blob))
+```
+"""
+function subset(f::Face; unicodes = nothing, glyphs = nothing,
+                flags = Symbol[])::Face
+    input = ccall((:hb_subset_input_create_or_fail, libhb_subset),
+                  Ptr{Cvoid}, ())
+    input == C_NULL && throw(ErrorException("hb_subset_input_create_or_fail failed"))
+    try
+        bits = _flags_value(flags, _SUBSET_FLAGS, "subset flag")
+        bits == 0 || ccall((:hb_subset_input_set_flags, libhb_subset), Cvoid,
+                           (Ptr{Cvoid}, Cuint), input, Cuint(bits))
+        if unicodes !== nothing
+            set = ccall((:hb_subset_input_unicode_set, libhb_subset),
+                        Ptr{Cvoid}, (Ptr{Cvoid},), input)
+            for cp in unicodes
+                ccall((:hb_set_add, libhb), Cvoid,
+                      (Ptr{Cvoid}, UInt32), set, UInt32(cp))
+            end
+        end
+        if glyphs !== nothing
+            set = ccall((:hb_subset_input_glyph_set, libhb_subset),
+                        Ptr{Cvoid}, (Ptr{Cvoid},), input)
+            for g in glyphs
+                ccall((:hb_set_add, libhb), Cvoid,
+                      (Ptr{Cvoid}, UInt32), set, UInt32(g))
+            end
+        end
+
+        ptr = ccall((:hb_subset_or_fail, libhb_subset), Ptr{Cvoid},
+                    (Ptr{Cvoid}, Ptr{Cvoid}), f.ptr, input)
+        ptr == C_NULL && throw(ErrorException("hb_subset_or_fail failed"))
+
+        # Materialise the result so the new face owns its bytes rather than
+        # referring back to the source face.
+        blob_ptr = ccall((:hb_face_reference_blob, libhb), Ptr{Cvoid},
+                         (Ptr{Cvoid},), ptr)
+        ccall((:hb_face_destroy, libhb), Cvoid, (Ptr{Cvoid},), ptr)
+        blob = Blob(blob_ptr, nothing)
+        finalizer(_blob_destroy, blob)
+        return Face(blob)
+    finally
+        ccall((:hb_subset_input_destroy, libhb_subset), Cvoid,
+              (Ptr{Cvoid},), input)
+    end
+end
+
 # --- Module initialisation ------------------------------------------------
 
 function __init__()
@@ -1966,6 +2592,7 @@ function __init__()
     # into the precompilation image.
     _MESSAGE_CFUNC[] = @cfunction(_message_trampoline, Cint,
                                   (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{UInt8}, Ptr{Cvoid}))
+    _init_draw_funcs()
     return nothing
 end
 
