@@ -95,7 +95,14 @@ pass the resulting path.
 | `Font(face; size, scale, funcs)` | A face at a size, ready to shape |
 | `Font(path; size)` | Shorthand for a file on disk |
 | `upem`, `glyph_count`, `face_index`, `face_count` | Face metadata |
-| `table_tags`, `reference_table`, `data` | Raw table access |
+| `table_tags`, `reference_table`, `data`, `unicodes` | Raw table access |
+| `name(face, :family)`, `name_entries` | The `name` table |
+| `glyph_h_advance(s)`, `glyph_extents`, `font_extents` | Glyph and line metrics |
+| `glyph_name`, `glyph_from_name` | Glyph names |
+| `metric(font, :x_height)`, `style(font, :weight)` | OpenType metrics and style |
+| `axes`, `named_instances`, `set_variations!` | Variable fonts |
+| `layout_feature_tags`, `glyph_class`, `baseline` | OpenType layout |
+| `sub_font`, `synthetic_bold!`, `make_immutable!` | Font state |
 | `scale`/`scale!`, `ppem`/`ppem!`, `ptem`/`ptem!` | Font size state |
 | `Buffer()`, `add_text!`, `add_codepoints!`, `clear!`, `reset!` | Buffers |
 | `direction`, `script`, `language`, `segment_properties` | Buffer properties |

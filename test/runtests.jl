@@ -6,6 +6,7 @@ import HarfBuzz   # top level: used to probe system fonts for coverage
 # installed. See test/fonts/README.md for its provenance and for what it
 # is known to exercise.
 const TEST_FONT = joinpath(@__DIR__, "fonts", "NotoSans-subset.ttf")
+const TEST_FONT_VAR = joinpath(@__DIR__, "fonts", "NotoSans-variable-subset.ttf")
 
 # System fonts are still used, but only for coverage these cannot give
 # (CJK) or to check that arbitrary real-world files load. Those tests use
@@ -736,6 +737,279 @@ end
     HarfBuzz.shape!(font, buf)
     @test !isempty(messages)
     @test any(m -> occursin("start", m), messages)
+end
+
+# --- Phase 3: glyph metrics ----------------------------------------------
+
+@testitem "glyph advances" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+    i = HarfBuzz.get_nominal_glyph(font, UInt32('i'))
+
+    @test HarfBuzz.glyph_h_advance(font, a) > 0
+    # Proportional font: "A" is wider than "i".
+    @test HarfBuzz.glyph_h_advance(font, a) > HarfBuzz.glyph_h_advance(font, i)
+    # No vertical metrics in this font: HarfBuzz synthesises them.
+    @test HarfBuzz.glyph_v_advance(font, a) != 0
+
+    # The batch form agrees with the scalar one.
+    @test HarfBuzz.glyph_h_advances(font, [a, i]) ==
+          [HarfBuzz.glyph_h_advance(font, a), HarfBuzz.glyph_h_advance(font, i)]
+
+    # Advances match what shaping reports for the same glyphs.
+    shaped = HarfBuzz.shape(font, "Ai")
+    @test [p.x_advance for p in shaped.positions] ==
+          HarfBuzz.glyph_h_advances(font, HarfBuzz.glyph_ids(shaped))
+end
+
+@testitem "glyph extents" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+    space = HarfBuzz.get_nominal_glyph(font, UInt32(' '))
+
+    e = HarfBuzz.glyph_extents(font, a)
+    @test e isa HarfBuzz.GlyphExtents
+    @test e.width > 0
+    # y grows upward, so a cap-height glyph has positive bearing and
+    # negative height.
+    @test e.y_bearing > 0
+    @test e.height < 0
+
+    # A space draws nothing.
+    es = HarfBuzz.glyph_extents(font, space)
+    @test es === nothing || es.width == 0
+end
+
+@testitem "font extents" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    e = HarfBuzz.font_extents(font)
+    @test e isa HarfBuzz.FontExtents
+    @test e.ascender > 0
+    @test e.descender < 0
+    @test e.line_gap >= 0
+    @test HarfBuzz.font_extents(font; direction = :ttb) isa HarfBuzz.FontExtents
+end
+
+@testitem "glyph origins and legacy kerning" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+    # Horizontal origin is at the pen position for a horizontal font.
+    @test HarfBuzz.glyph_h_origin(font, a) == (0, 0)
+    @test HarfBuzz.glyph_v_origin(font, a) isa Tuple{Int,Int}
+    # The test font kerns through GPOS, not the legacy kern table.
+    @test HarfBuzz.glyph_h_kerning(font, a, a) == 0
+end
+
+# --- Phase 3: glyph names -------------------------------------------------
+
+@testitem "glyph names round-trip" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+    name = HarfBuzz.glyph_name(font, a)
+    @test name == "A"
+    @test HarfBuzz.glyph_from_name(font, "A") == a
+    @test HarfBuzz.glyph_from_name(font, "no_such_glyph") === nothing
+end
+
+# --- Phase 3: face coverage ----------------------------------------------
+
+@testitem "face unicode coverage" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    cps = HarfBuzz.unicodes(face)
+    @test cps isa Set{UInt32}
+    @test UInt32('A') in cps
+    @test UInt32('é') in cps
+    @test !(UInt32(0x6f22) in cps)         # 漢, outside the subset
+    @test length(cps) < 200                # a subset, not a full font
+end
+
+# --- Phase 3: name table --------------------------------------------------
+
+@testitem "name table lookup" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    @test occursin("Noto", HarfBuzz.name(face, :family))
+    @test HarfBuzz.name(face, :subfamily) == "Regular"
+    @test occursin("Copyright", HarfBuzz.name(face, :copyright))
+    @test occursin("Noto", HarfBuzz.name(face, :postscript_name))
+    # The subset carries no licence record, so a valid id can still be absent.
+    @test HarfBuzz.name(face, :license) === nothing
+    # Numeric ids work too, and a missing one is `nothing`.
+    @test HarfBuzz.name(face, 1) == HarfBuzz.name(face, :family)
+    @test HarfBuzz.name(face, 0xFFF0) === nothing
+    @test_throws ArgumentError HarfBuzz.name(face, :not_a_name_id)
+end
+
+@testitem "name table listing" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    entries = HarfBuzz.name_entries(face)
+    @test !isempty(entries)
+    @test all(e -> haskey(e, :name_id) && haskey(e, :language), entries)
+    @test 1 in [e.name_id for e in entries]     # family name is always there
+end
+
+# --- Phase 3: OpenType metrics and style ----------------------------------
+
+@testitem "OpenType metrics" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    x = HarfBuzz.metric(font, :x_height)
+    cap = HarfBuzz.metric(font, :cap_height)
+    @test x isa Integer && x > 0
+    @test cap isa Integer && cap > x        # caps are taller than x-height
+    @test HarfBuzz.metric(font, :underline_offset) < 0
+    @test HarfBuzz.metric(font, :horizontal_ascender) > 0
+    @test_throws ArgumentError HarfBuzz.metric(font, :not_a_metric)
+end
+
+@testitem "style values" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    @test HarfBuzz.style(font, :italic) == 0
+    @test HarfBuzz.style(font, :slant_angle) == 0
+    @test_throws ArgumentError HarfBuzz.style(font, :not_a_style)
+
+    # `style` reads STAT and fvar, so it follows the variations set on the
+    # font. (Weight is asserted on the variable font: the upstream static
+    # Noto Sans declares the family minimums in its STAT table, not its own
+    # instance values.)
+    varf = HarfBuzz.Font(Main.TEST_FONT_VAR; size = 18)
+    @test HarfBuzz.style(varf, :weight) ≈ 400
+    @test HarfBuzz.style(varf, :width) ≈ 100
+    HarfBuzz.set_variations!(varf, ["wght" => 700])
+    @test HarfBuzz.style(varf, :weight) ≈ 700
+end
+
+# --- Phase 3: variable fonts ----------------------------------------------
+
+@testitem "variation axes" begin
+    import HarfBuzz
+    plain = HarfBuzz.Face(Main.TEST_FONT)
+    varf = HarfBuzz.Face(Main.TEST_FONT_VAR)
+
+    @test !HarfBuzz.has_variations(plain)
+    @test isempty(HarfBuzz.axes(plain))
+
+    @test HarfBuzz.has_variations(varf)
+    ax = HarfBuzz.axes(varf)
+    @test length(ax) == 2
+    wght = only(filter(a -> a.tag == "wght", ax))
+    @test wght.min_value ≈ 100
+    @test wght.default_value ≈ 400
+    @test wght.max_value ≈ 900
+    @test "wdth" in [a.tag for a in ax]
+end
+
+@testitem "named instances" begin
+    import HarfBuzz
+    varf = HarfBuzz.Face(Main.TEST_FONT_VAR)
+    inst = HarfBuzz.named_instances(varf)
+    @test length(inst) == 9
+    @test all(i -> length(i.coords) == 2, inst)
+    @test any(i -> occursin("Bold", i.name), inst)
+end
+
+@testitem "setting variations changes shaping" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT_VAR)
+
+    adv(w) = begin
+        f = HarfBuzz.Font(face; size = 18)
+        HarfBuzz.set_variations!(f, ["wght" => w])
+        [p.x_advance for p in HarfBuzz.shape(f, "Hi").positions]
+    end
+    thin, regular, black = adv(100), adv(400), adv(900)
+    @test thin != regular != black
+    # Heavier strokes are wider.
+    @test all(black .>= regular .>= thin)
+
+    f = HarfBuzz.Font(face; size = 18)
+    HarfBuzz.set_variations!(f, ["wght" => 700])
+    @test HarfBuzz.var_coords_design(f)[1] ≈ 700
+    @test length(HarfBuzz.var_coords_normalized(f)) == 2
+end
+
+# --- Phase 3: OpenType layout --------------------------------------------
+
+@testitem "layout table introspection" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    @test HarfBuzz.has_substitution(face)
+    @test HarfBuzz.has_positioning(face)
+    @test HarfBuzz.has_glyph_classes(face)
+
+    scripts = HarfBuzz.layout_script_tags(face, :GSUB)
+    @test !isempty(scripts)
+    @test all(s -> length(s) == 4, scripts)
+
+    features = HarfBuzz.layout_feature_tags(face, :GSUB)
+    @test "liga" in features
+    @test "kern" in HarfBuzz.layout_feature_tags(face, :GPOS)
+    @test_throws ArgumentError HarfBuzz.layout_feature_tags(face, :GPOX)
+end
+
+@testitem "glyph classes from GDEF" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+    font = HarfBuzz.Font(face; size = 18)
+    a = HarfBuzz.get_nominal_glyph(font, UInt32('A'))
+    @test HarfBuzz.glyph_class(face, a) == :base_glyph
+
+    # The "ffi" ligature glyph is classified as such.
+    lig = HarfBuzz.glyph_ids(HarfBuzz.shape(font, "office"))[2]
+    @test HarfBuzz.glyph_class(face, lig) == :ligature
+end
+
+@testitem "baselines" begin
+    import HarfBuzz
+    font = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    # The roman baseline is at the origin for horizontal Latin text.
+    @test HarfBuzz.baseline(font, :romn) == 0
+    # A fallback is always produced, even for a tag the font lacks.
+    @test HarfBuzz.baseline(font, :hang) isa Integer
+    @test_throws ArgumentError HarfBuzz.baseline(font, :nope)
+end
+
+# --- Phase 3: font state deferred from Phase 1 ---------------------------
+
+@testitem "synthetic bold and slant" begin
+    import HarfBuzz
+    face = HarfBuzz.Face(Main.TEST_FONT)
+
+    plain = HarfBuzz.Font(face; size = 18)
+    @test !HarfBuzz.is_synthetic(plain)
+    @test HarfBuzz.synthetic_slant(plain) == 0
+
+    slanted = HarfBuzz.Font(face; size = 18)
+    HarfBuzz.synthetic_slant!(slanted, 0.25)
+    @test HarfBuzz.synthetic_slant(slanted) ≈ 0.25
+    @test HarfBuzz.is_synthetic(slanted)
+
+    bold = HarfBuzz.Font(face; size = 18)
+    HarfBuzz.synthetic_bold!(bold, 0.02, 0.02)
+    @test HarfBuzz.synthetic_bold(bold)[1] ≈ 0.02 atol = 1e-6
+    @test HarfBuzz.is_synthetic(bold)
+end
+
+@testitem "sub-fonts and immutability" begin
+    import HarfBuzz
+    parent = HarfBuzz.Font(Main.TEST_FONT; size = 18)
+    child = HarfBuzz.sub_font(parent)
+    @test HarfBuzz.scale(child) == HarfBuzz.scale(parent)
+    HarfBuzz.scale!(child, (100, 100))
+    @test HarfBuzz.scale(child) == (100, 100)
+    @test HarfBuzz.scale(parent) == (18 * 64, 18 * 64)   # parent untouched
+
+    @test !HarfBuzz.is_immutable(parent)
+    HarfBuzz.make_immutable!(parent)
+    @test HarfBuzz.is_immutable(parent)
 end
 
 # --- Phase 0 regression tests --------------------------------------------

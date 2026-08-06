@@ -24,6 +24,14 @@ HarfBuzz.glyph_count
 HarfBuzz.face_index
 HarfBuzz.table_tags
 HarfBuzz.reference_table
+HarfBuzz.unicodes
+```
+
+## The name table
+
+```@docs
+HarfBuzz.name
+HarfBuzz.name_entries
 ```
 
 ## Font size and metrics state
@@ -37,9 +45,64 @@ HarfBuzz.ppem
 HarfBuzz.ptem
 ```
 
-## Glyph availability
+## Glyph metrics
+
+Everything here is in the font's scale units, which `size` sets to 26.6
+fixed point; [`px`](@ref HarfBuzz.px) converts.
+
+```@docs
+HarfBuzz.glyph_h_advance
+HarfBuzz.glyph_h_advances
+HarfBuzz.glyph_extents
+HarfBuzz.font_extents
+HarfBuzz.glyph_h_origin
+HarfBuzz.glyph_h_kerning
+HarfBuzz.GlyphExtents
+HarfBuzz.FontExtents
+```
+
+## Glyph availability and names
 
 ```@docs
 HarfBuzz.has_glyph
 HarfBuzz.get_nominal_glyph
+HarfBuzz.glyph_name
+HarfBuzz.glyph_from_name
+```
+
+## OpenType metrics and style
+
+```@docs
+HarfBuzz.metric
+HarfBuzz.style
+```
+
+## Variable fonts
+
+```@docs
+HarfBuzz.has_variations
+HarfBuzz.axes
+HarfBuzz.named_instances
+HarfBuzz.set_variations!
+HarfBuzz.var_coords_design
+```
+
+## OpenType layout
+
+```@docs
+HarfBuzz.has_substitution
+HarfBuzz.layout_script_tags
+HarfBuzz.layout_feature_tags
+HarfBuzz.glyph_class
+HarfBuzz.baseline
+```
+
+## Font state
+
+```@docs
+HarfBuzz.sub_font
+HarfBuzz.synthetic_slant
+HarfBuzz.synthetic_bold
+HarfBuzz.is_synthetic
+HarfBuzz.make_immutable!
 ```

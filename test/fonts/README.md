@@ -1,8 +1,13 @@
-# Test font
+# Test fonts
 
-`NotoSans-subset.ttf` is a subset of **Noto Sans Regular**, vendored so
-that the test suite asserts real shaping behaviour instead of skipping
-whenever a machine happens not to have a given system font.
+Two subsets of **Noto Sans** are vendored so that the test suite asserts
+real behaviour instead of skipping whenever a machine happens not to have
+a given system font.
+
+| File | Size | Used for |
+|---|---|---|
+| `NotoSans-subset.ttf` | 25 KB | shaping, features, glyph flags, metrics, names |
+| `NotoSans-variable-subset.ttf` | 58 KB | variation axes and named instances |
 
 Without it, 28 of the 53 test items depended on finding a system font and
 returned silently when none was found — a bare CI container reported the
@@ -12,11 +17,12 @@ same green suite as a fully populated workstation.
 
 | | |
 |---|---|
-| Source | <https://github.com/googlefonts/noto-fonts> — `hinted/ttf/NotoSans/NotoSans-Regular.ttf` |
+| Source (static) | <https://github.com/googlefonts/noto-fonts> — `hinted/ttf/NotoSans/NotoSans-Regular.ttf` |
+| Source (variable) | <https://github.com/notofonts/notofonts.github.io> — `fonts/NotoSans/unhinted/variable-ttf/NotoSans[wdth,wght].ttf` |
 | Licence | SIL Open Font License 1.1, see `OFL.txt` |
 | Reserved Font Name | none — the copyright notice carries no RFN clause, so a modified subset may be redistributed |
-| Original size | 569 208 bytes |
-| Subset size | 25 328 bytes |
+| Original sizes | 569 208 bytes (static), 1 581 884 bytes (variable) |
+| Subset sizes | 25 328 bytes (static), 58 768 bytes (variable) |
 
 ## What the subset keeps
 
@@ -35,6 +41,15 @@ Enough to exercise, deterministically:
 | `unsafe_to_break` | `"AVA"` | flags `[0, 1, 1]` |
 | Missing coverage | U+6F22 `漢` | `has_glyph` is `false` |
 
+The variable subset keeps `fvar`, `gvar`, `avar`, `HVAR` and `MVAR`, so
+variations are real rather than a no-op:
+
+| Behaviour | Observed |
+|---|---|
+| Axes | `wght` 100–900 (default 400), `wdth` 62.5–100 (default 100) |
+| Named instances | 9 |
+| `wght` changes advances | `"Hi"` → `[813, 238]` at 100, `[854, 297]` at 400, `[882, 374]` at 900 |
+
 ## Reproducing it
 
 The subset was produced with `libharfbuzz-subset`, which ships in
@@ -48,7 +63,7 @@ import HarfBuzz as HB
 const libsub = HarfBuzz_jll.libharfbuzz_subset_path
 const libhb  = HarfBuzz_jll.libharfbuzz_path
 
-src, dst = "NotoSans-Regular.ttf", "NotoSans-subset.ttf"
+src, dst = "NotoSans-Regular.ttf", "NotoSans-subset.ttf"   # or the variable pair
 face = HB.Face(src)
 
 input = ccall((:hb_subset_input_create_or_fail, libsub), Ptr{Cvoid}, ())
@@ -70,6 +85,6 @@ script becomes a few lines of ordinary `HarfBuzz.jl`.
 
 ## When to add another font
 
-Only when a phase needs coverage this one cannot give: a variable font for
-the `fvar`/`avar` work in Phase 3, or a COLR/CPAL font for the colour work
-in Phase 4. Not before.
+Only when a phase needs coverage these cannot give — a COLR/CPAL font for
+the colour work in Phase 4, for instance. Not before. The variable subset
+was added for exactly that reason when Phase 3 reached `fvar`/`avar`.

@@ -16,17 +16,20 @@ Reference points used for the gap analysis:
 
 ## Status
 
-`HarfBuzz.jl` binds **75 of the 508 `hb_*` symbols** exported by
+`HarfBuzz.jl` binds **119 of the 508 `hb_*` symbols** exported by
 `libharfbuzz` in the JLL. `libharfbuzz-subset` and `libharfbuzz-gobject` ship
 in the same artifact and are unused.
 
-Phases 0, 1 and 2 are done: the defects that made shaping silently
-incorrect are fixed, the `Blob → Face → Font` chain is in place with
-HarfBuzz's own table reader as the default metrics source (so the package
-depends only on `HarfBuzz_jll`), and the buffer API is complete enough to
-drive shaping properly — segment properties, glyph flags, serialization.
-What remains missing is the font and face query surface, and everything
-beyond shaping — see the phases below.
+Phases 0 to 3 are done: the defects that made shaping silently incorrect
+are fixed, the `Blob → Face → Font` chain is in place with HarfBuzz's own
+table reader as the default metrics source (so the package depends only on
+`HarfBuzz_jll`), the buffer API drives shaping properly — segment
+properties, glyph flags, serialization — and fonts and faces can be
+queried: metrics, glyph names, the name table, OpenType metrics and style,
+variation axes, and layout introspection.
+
+What remains is Phase 4: colour, outline and paint extraction, math, and
+subsetting.
 
 ## Phase 0 — Correctness — **done**
 
@@ -205,21 +208,47 @@ used to be font-dependent and were therefore weakened. With the vendored
 test font (open question 10, now decided) they are real again: `"AVA"`
 yields flags `[0, 1, 1]` deterministically.
 
-## Phase 3 — Font and face queries
+## Phase 3 — Font and face queries — **done**
 
-- Glyph metrics: `glyph_h/v_advance` (single and batch), `glyph_extents`,
-  `glyph_h/v_origin`, `h/v_extents`, `glyph_h_kerning`
-- Glyph names: `glyph_to_string`, `glyph_from_string`, `get_glyph_name`,
-  `get_glyph_from_name`
-- Variable fonts: `hb_ot_var_get_axis_infos`, named instances,
-  `set_variation(s)`, design and normalised coordinates
-- `hb-ot-name`: family, style, licence, and other name records
-- `hb-ot-metrics`: x-height, cap-height, underline, strikeout,
-  superscript/subscript
-- `hb-style`: `hb_style_get_value` (weight, width, slant, optical size)
-- `hb-ot-layout`: script/language/feature/lookup enumeration, baselines,
-  GDEF glyph classes
-- `hb_set_t` / `hb_map_t` — a prerequisite for several of the queries above
+Shipped:
+
+- Glyph metrics: `glyph_h_advance`, `glyph_v_advance`, the batch
+  `glyph_h_advances`, `glyph_extents`, `glyph_h_origin`, `glyph_v_origin`,
+  `font_extents`, `glyph_h_kerning` (legacy `kern` table only — GPOS
+  kerning arrives through shaping)
+- Glyph names: `glyph_name`, `glyph_from_name`
+- `unicodes(face)`, returning a Julia `Set{UInt32}`. `hb_set_t` stays
+  internal: HarfBuzz only uses it as an out-parameter, and a wrapper nobody
+  would keep around is not worth the API surface.
+- `hb-ot-name`: `name(face, :family)` and friends by symbol or numeric id,
+  plus `name_entries` to list what a font actually carries
+- `hb-ot-metrics`: `metric(font, :x_height)` and the other 27 tags, with
+  HarfBuzz's fallback synthesis on by default
+- `hb-style`: `style(font, :weight)`, which follows any variation set
+- `hb-ot-var`: `has_variations`, `axes`, `named_instances`,
+  `set_variations!`, `var_coords_design`, `var_coords_normalized`
+- `hb-ot-layout`: `has_substitution`, `has_positioning`,
+  `has_glyph_classes`, `layout_script_tags`, `layout_feature_tags`,
+  `glyph_class`, `baseline`
+- Deferred from Phase 1 and now done: `sub_font`, `synthetic_bold`/`!`,
+  `synthetic_slant`/`!`, `is_synthetic`, `make_immutable!`, `is_immutable`
+
+A second vendored font was needed for this phase, as anticipated:
+`test/fonts/NotoSans-variable-subset.ttf`, 58 KB, two axes and nine named
+instances, so `fvar` assertions are real rather than "no axes, no crash".
+
+Two test expectations turned out to be wrong about the world rather than
+about the code, which is what asserting against a known font is for:
+`hb_style_get_value` reports weight 100 and width 62.5 for the *upstream*
+static Noto Sans, because its `STAT` table declares the family minimums
+rather than its own instance values; and `hb-subset` drops `post` glyph
+names unless `HB_SUBSET_FLAGS_GLYPH_NAMES` is set, which the vendored
+subsets now use.
+
+Not done, and cheap to add when something needs them:
+`hb_font_get_glyph_contour_point`, the `*_for_direction` origin helpers,
+`hb_ot_layout_collect_lookups`, `hb_ot_layout_lookup_get_glyph_alternates`,
+custom `hb_font_funcs_t`.
 
 ## Phase 4 — Beyond shaping
 

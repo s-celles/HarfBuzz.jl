@@ -54,12 +54,30 @@ now stands rather than a trail of intermediate API changes.
   `hb-shape` produces, which make golden tests possible.
 - `message_func!`, tracing each shaping stage, equivalent to
   `hb-shape --trace`.
-- Font glyph queries: `has_glyph`, `get_nominal_glyph`.
+- Font glyph queries: `has_glyph`, `get_nominal_glyph`, `glyph_name`,
+  `glyph_from_name`.
+- Glyph and font metrics: `glyph_h_advance`, `glyph_v_advance`, the batch
+  `glyph_h_advances`, `glyph_extents`, `glyph_h_origin`, `glyph_v_origin`,
+  `font_extents`, `glyph_h_kerning`, with `GlyphExtents` and `FontExtents`.
+- `unicodes(face)`, the face's `cmap` coverage as a `Set{UInt32}`.
+- The `name` table: `name(face, :family)` by symbol or numeric id, and
+  `name_entries` to list what a font carries.
+- OpenType metrics and style: `metric(font, :x_height)` over all 28 tags,
+  and `style(font, :weight)`, which follows any variation set.
+- Variable fonts: `has_variations`, `axes`, `named_instances`,
+  `set_variations!`, `var_coords_design`, `var_coords_normalized`.
+- OpenType layout introspection: `has_substitution`, `has_positioning`,
+  `has_glyph_classes`, `layout_script_tags`, `layout_feature_tags`,
+  `glyph_class`, `baseline`.
+- Font state: `sub_font`, `synthetic_bold`/`synthetic_bold!`,
+  `synthetic_slant`/`synthetic_slant!`, `is_synthetic`, `make_immutable!`,
+  `is_immutable`.
 - Library helpers: `version`, `version_string`, `tag`, `tag_string`.
 - `ROADMAP.md`: gap analysis against the HarfBuzz C API and the official
   bindings (uharfbuzz, harfbuzz_rs, harfbuzzjs, luaharfbuzz), phased plan,
   and open API design questions.
-- A vendored test font (`test/fonts/NotoSans-subset.ttf`, 25 KB, OFL), so
+- Vendored test fonts (`test/fonts/NotoSans-subset.ttf`, 25 KB, and
+  `NotoSans-variable-subset.ttf`, 58 KB, both OFL), so
   the suite asserts real shaping behaviour instead of skipping whenever a
   machine lacks a given system font. Kerning, ligatures, `unsafe_to_break`
   and missing coverage are now deterministic. The few tests that still need

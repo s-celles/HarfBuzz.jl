@@ -1306,6 +1306,658 @@ True if the font contains a glyph for `unicode`.
 """
 has_glyph(font::Font, unicode::UInt32)::Bool = get_nominal_glyph(font, unicode) != 0
 
+# --- Glyph metrics --------------------------------------------------------
+
+"""
+    GlyphExtents
+
+Bounding box of a glyph, in the font's scale units. `y` grows upward, so a
+cap-height glyph has a positive `y_bearing` and a negative `height`.
+
+- `x_bearing`, `y_bearing` — top-left corner relative to the origin.
+- `width`, `height` — extent from that corner.
+"""
+struct GlyphExtents
+    x_bearing::Int32
+    y_bearing::Int32
+    width::Int32
+    height::Int32
+end
+
+"""
+    FontExtents
+
+Line metrics, in the font's scale units.
+
+- `ascender` — distance above the baseline, positive.
+- `descender` — distance below it, negative.
+- `line_gap` — extra leading between lines.
+"""
+struct FontExtents
+    ascender::Int32
+    descender::Int32
+    line_gap::Int32
+end
+
+# hb_font_extents_t has nine reserved fields after the three public ones.
+struct _HbFontExtentsRaw
+    ascender::Int32
+    descender::Int32
+    line_gap::Int32
+    reserved::NTuple{9,Int32}
+end
+
+"""
+    glyph_h_advance(font::Font, glyph) -> Int32
+    glyph_v_advance(font::Font, glyph) -> Int32
+
+Advance for one glyph, in the font's scale units. This is the metric
+shaping reports; use it when measuring text you have not shaped.
+"""
+glyph_h_advance(f::Font, glyph::Integer)::Int32 =
+    ccall((:hb_font_get_glyph_h_advance, libhb), Int32,
+          (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph))
+
+glyph_v_advance(f::Font, glyph::Integer)::Int32 =
+    ccall((:hb_font_get_glyph_v_advance, libhb), Int32,
+          (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph))
+
+"""
+    glyph_h_advances(font::Font, glyphs) -> Vector{Int32}
+
+Advances for many glyphs in one call, which lets HarfBuzz avoid repeating
+per-glyph setup.
+"""
+function glyph_h_advances(f::Font, glyphs::AbstractVector{<:Integer})::Vector{Int32}
+    gids = UInt32[UInt32(g) for g in glyphs]
+    out = Vector{Int32}(undef, length(gids))
+    isempty(gids) && return out
+    GC.@preserve gids out begin
+        ccall((:hb_font_get_glyph_h_advances, libhb), Cvoid,
+              (Ptr{Cvoid}, Cuint, Ptr{UInt32}, Cuint, Ptr{Int32}, Cuint),
+              f.ptr, Cuint(length(gids)), pointer(gids), Cuint(sizeof(UInt32)),
+              pointer(out), Cuint(sizeof(Int32)))
+    end
+    return out
+end
+
+"""
+    glyph_extents(font::Font, glyph) -> Union{GlyphExtents,Nothing}
+
+Bounding box of a glyph, or `nothing` when the font cannot report one.
+"""
+function glyph_extents(f::Font, glyph::Integer)::Union{GlyphExtents,Nothing}
+    out = Ref{GlyphExtents}()
+    ok = ccall((:hb_font_get_glyph_extents, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, Ref{GlyphExtents}), f.ptr, UInt32(glyph), out)
+    return ok != 0 ? out[] : nothing
+end
+
+"""
+    font_extents(font::Font; direction = :ltr) -> FontExtents
+
+Line metrics for the given direction. Vertical metrics are synthesised
+when the font carries none.
+"""
+function font_extents(f::Font; direction::Symbol = :ltr)::FontExtents
+    out = Ref{_HbFontExtentsRaw}()
+    sym = direction in (:ttb, :btt) ? :hb_font_get_v_extents : :hb_font_get_h_extents
+    if sym === :hb_font_get_v_extents
+        ccall((:hb_font_get_v_extents, libhb), Cint,
+              (Ptr{Cvoid}, Ref{_HbFontExtentsRaw}), f.ptr, out)
+    else
+        ccall((:hb_font_get_h_extents, libhb), Cint,
+              (Ptr{Cvoid}, Ref{_HbFontExtentsRaw}), f.ptr, out)
+    end
+    r = out[]
+    return FontExtents(r.ascender, r.descender, r.line_gap)
+end
+
+"""
+    glyph_h_origin(font::Font, glyph) -> Union{Tuple{Int,Int},Nothing}
+    glyph_v_origin(font::Font, glyph) -> Union{Tuple{Int,Int},Nothing}
+
+Origin a glyph is drawn from, for horizontal or vertical layout.
+"""
+function glyph_h_origin(f::Font, glyph::Integer)
+    x = Ref{Int32}(0); y = Ref{Int32}(0)
+    ok = ccall((:hb_font_get_glyph_h_origin, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, Ref{Int32}, Ref{Int32}),
+               f.ptr, UInt32(glyph), x, y)
+    return ok != 0 ? (Int(x[]), Int(y[])) : nothing
+end
+
+function glyph_v_origin(f::Font, glyph::Integer)
+    x = Ref{Int32}(0); y = Ref{Int32}(0)
+    ok = ccall((:hb_font_get_glyph_v_origin, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, Ref{Int32}, Ref{Int32}),
+               f.ptr, UInt32(glyph), x, y)
+    return ok != 0 ? (Int(x[]), Int(y[])) : nothing
+end
+
+"""
+    glyph_h_kerning(font::Font, left, right) -> Int32
+
+Kerning from the legacy `kern` table only. Fonts that kern through GPOS —
+most of them — return 0 here; their kerning arrives through shaping.
+"""
+glyph_h_kerning(f::Font, left::Integer, right::Integer)::Int32 =
+    ccall((:hb_font_get_glyph_h_kerning, libhb), Int32,
+          (Ptr{Cvoid}, UInt32, UInt32), f.ptr, UInt32(left), UInt32(right))
+
+# --- Glyph names ----------------------------------------------------------
+
+"""
+    glyph_name(font::Font, glyph) -> Union{String,Nothing}
+
+The glyph's name from the `post` table, or `nothing` when the font has
+none.
+"""
+function glyph_name(f::Font, glyph::Integer)::Union{String,Nothing}
+    buf = Vector{UInt8}(undef, 128)
+    ok = ccall((:hb_font_get_glyph_name, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, Ptr{UInt8}, Cuint),
+               f.ptr, UInt32(glyph), buf, Cuint(length(buf)))
+    ok == 0 && return nothing
+    stop = findfirst(==(0x00), buf)
+    return String(buf[1:(stop === nothing ? length(buf) : stop - 1)])
+end
+
+"""
+    glyph_from_name(font::Font, name) -> Union{UInt32,Nothing}
+
+The glyph with this name, or `nothing`.
+"""
+function glyph_from_name(f::Font, name::AbstractString)::Union{UInt32,Nothing}
+    out = Ref{UInt32}(0)
+    ok = ccall((:hb_font_get_glyph_from_name, libhb), Cint,
+               (Ptr{Cvoid}, Ptr{UInt8}, Cint, Ref{UInt32}),
+               f.ptr, String(name), Cint(sizeof(name)), out)
+    return ok != 0 ? out[] : nothing
+end
+
+# --- Sets -----------------------------------------------------------------
+
+# `hb_set_t` is not exposed: HarfBuzz uses it as an out-parameter, and a
+# Julia `Set` is friendlier than a wrapper nobody would keep around.
+function _collect_set(fill!::Function)::Set{UInt32}
+    set = ccall((:hb_set_create, libhb), Ptr{Cvoid}, ())
+    set == C_NULL && throw(ErrorException("hb_set_create failed"))
+    try
+        fill!(set)
+        out = Set{UInt32}()
+        cp = Ref{UInt32}(typemax(UInt32))   # HB_SET_VALUE_INVALID
+        while ccall((:hb_set_next, libhb), Cint,
+                    (Ptr{Cvoid}, Ref{UInt32}), set, cp) != 0
+            push!(out, cp[])
+        end
+        return out
+    finally
+        ccall((:hb_set_destroy, libhb), Cvoid, (Ptr{Cvoid},), set)
+    end
+end
+
+"""
+    unicodes(face::Face) -> Set{UInt32}
+
+Every Unicode codepoint the face's `cmap` covers.
+"""
+unicodes(f::Face)::Set{UInt32} = _collect_set() do set
+    ccall((:hb_face_collect_unicodes, libhb), Cvoid,
+          (Ptr{Cvoid}, Ptr{Cvoid}), f.ptr, set)
+end
+
+# --- Name table -----------------------------------------------------------
+
+const _NAME_IDS = (
+    :copyright => 0, :family => 1, :subfamily => 2, :unique_id => 3,
+    :full_name => 4, :version => 5, :postscript_name => 6, :trademark => 7,
+    :manufacturer => 8, :designer => 9, :description => 10,
+    :vendor_url => 11, :designer_url => 12, :license => 13,
+    :license_url => 14, :typographic_family => 16,
+    :typographic_subfamily => 17, :mac_full_name => 18, :sample_text => 19,
+    :cid_findfont_name => 20, :wws_family => 21, :wws_subfamily => 22,
+    :light_background => 23, :dark_background => 24,
+    :variations_ps_prefix => 25,
+)
+
+_name_id(id::Integer) = UInt32(id)
+function _name_id(id::Symbol)
+    i = findfirst(p -> p.first === id, _NAME_IDS)
+    i === nothing && throw(ArgumentError(
+        "unknown name id :$id (expected one of " *
+        join(map(p -> ":" * String(p.first), _NAME_IDS), ", ") * ")"))
+    return UInt32(_NAME_IDS[i].second)
+end
+
+"""
+    name(face::Face, id; language = "en") -> Union{String,Nothing}
+
+A record from the font's `name` table. `id` is a `Symbol` such as
+`:family`, `:subfamily`, `:license` or `:version`, or a raw numeric name
+ID. Returns `nothing` when the font carries no such record.
+"""
+function name(f::Face, id; language::AbstractString = "en")::Union{String,Nothing}
+    nid = _name_id(id)
+    lang = _language_value(language)
+    size = Ref{Cuint}(0)
+    len = ccall((:hb_ot_name_get_utf8, libhb), Cuint,
+                (Ptr{Cvoid}, UInt32, Ptr{Cvoid}, Ref{Cuint}, Ptr{UInt8}),
+                f.ptr, nid, lang, size, C_NULL)
+    len == 0 && return nothing
+    buf = Vector{UInt8}(undef, Int(len) + 1)
+    size[] = Cuint(length(buf))
+    ccall((:hb_ot_name_get_utf8, libhb), Cuint,
+          (Ptr{Cvoid}, UInt32, Ptr{Cvoid}, Ref{Cuint}, Ptr{UInt8}),
+          f.ptr, nid, lang, size, buf)
+    return String(buf[1:Int(len)])
+end
+
+struct _HbOtNameEntryRaw
+    name_id::UInt32
+    var::UInt32
+    language::Ptr{Cvoid}
+end
+
+"""
+    name_entries(face::Face) -> Vector{NamedTuple}
+
+Every record the `name` table holds, as `(name_id, language)` pairs. Use
+[`name`](@ref) to read one.
+"""
+function name_entries(f::Face)
+    n = Ref{Cuint}(0)
+    ptr = ccall((:hb_ot_name_list_names, libhb), Ptr{_HbOtNameEntryRaw},
+                (Ptr{Cvoid}, Ref{Cuint}), f.ptr, n)
+    ptr == C_NULL && return NamedTuple[]
+    raw = unsafe_wrap(Array, ptr, Int(n[]))
+    return [(name_id = Int(r.name_id), language = _language_symbol(r.language))
+            for r in raw]
+end
+
+# --- OpenType metrics and style ------------------------------------------
+
+const _METRIC_TAGS = (
+    :horizontal_ascender => "hasc", :horizontal_descender => "hdsc",
+    :horizontal_line_gap => "hlgp", :horizontal_clipping_ascent => "hcla",
+    :horizontal_clipping_descent => "hcld", :vertical_ascender => "vasc",
+    :vertical_descender => "vdsc", :vertical_line_gap => "vlgp",
+    :horizontal_caret_rise => "hcrs", :horizontal_caret_run => "hcrn",
+    :horizontal_caret_offset => "hcof", :vertical_caret_rise => "vcrs",
+    :vertical_caret_run => "vcrn", :vertical_caret_offset => "vcof",
+    :x_height => "xhgt", :cap_height => "cpht",
+    :subscript_em_x_size => "sbxs", :subscript_em_y_size => "sbys",
+    :subscript_em_x_offset => "sbxo", :subscript_em_y_offset => "sbyo",
+    :superscript_em_x_size => "spxs", :superscript_em_y_size => "spys",
+    :superscript_em_x_offset => "spxo", :superscript_em_y_offset => "spyo",
+    :strikeout_size => "strs", :strikeout_offset => "stro",
+    :underline_size => "unds", :underline_offset => "undo",
+)
+
+"""
+    metric(font::Font, name::Symbol; fallback = true) -> Union{Int32,Nothing}
+
+An OpenType metric such as `:x_height`, `:cap_height`, `:underline_offset`
+or `:strikeout_size`, in the font's scale units.
+
+With `fallback = true` HarfBuzz synthesises a value when the font carries
+none; with `fallback = false` a missing metric returns `nothing`.
+
+Available: $(join(map(p -> ":" * String(p.first), _METRIC_TAGS), ", ")).
+"""
+function metric(f::Font, name::Symbol; fallback::Bool = true)
+    i = findfirst(p -> p.first === name, _METRIC_TAGS)
+    i === nothing && throw(ArgumentError(
+        "unknown metric :$name (expected one of " *
+        join(map(p -> ":" * String(p.first), _METRIC_TAGS), ", ") * ")"))
+    t = tag(_METRIC_TAGS[i].second)
+    out = Ref{Int32}(0)
+    if fallback
+        ccall((:hb_ot_metrics_get_position_with_fallback, libhb), Cvoid,
+              (Ptr{Cvoid}, UInt32, Ref{Int32}), f.ptr, t, out)
+        return out[]
+    end
+    ok = ccall((:hb_ot_metrics_get_position, libhb), Cint,
+               (Ptr{Cvoid}, UInt32, Ref{Int32}), f.ptr, t, out)
+    return ok != 0 ? out[] : nothing
+end
+
+const _STYLE_TAGS = (
+    :italic => "ital", :optical_size => "opsz", :slant_angle => "slnt",
+    :slant_ratio => "Slnt", :width => "wdth", :weight => "wght",
+)
+
+"""
+    style(font::Font, name::Symbol) -> Float64
+
+A style value: `:weight` (100–900), `:width` (a percentage),
+`:italic` (0 or 1), `:slant_angle` in degrees, `:slant_ratio`, or
+`:optical_size` in points. Reflects any variation set on the font.
+"""
+function style(f::Font, name::Symbol)::Float64
+    i = findfirst(p -> p.first === name, _STYLE_TAGS)
+    i === nothing && throw(ArgumentError(
+        "unknown style :$name (expected one of " *
+        join(map(p -> ":" * String(p.first), _STYLE_TAGS), ", ") * ")"))
+    return Float64(ccall((:hb_style_get_value, libhb), Cfloat,
+                         (Ptr{Cvoid}, UInt32), f.ptr, tag(_STYLE_TAGS[i].second)))
+end
+
+# --- Variable fonts -------------------------------------------------------
+
+struct _HbOtVarAxisInfoRaw
+    axis_index::UInt32
+    tag::UInt32
+    name_id::UInt32
+    flags::UInt32
+    min_value::Cfloat
+    default_value::Cfloat
+    max_value::Cfloat
+    reserved::UInt32
+end
+
+struct _HbVariationRaw
+    tag::UInt32
+    value::Cfloat
+end
+
+"""
+    has_variations(face::Face) -> Bool
+
+True when the face carries an `fvar` table, i.e. it is a variable font.
+"""
+has_variations(f::Face)::Bool =
+    ccall((:hb_ot_var_has_data, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+"""
+    axes(face::Face) -> Vector{NamedTuple}
+
+The variation axes, each as
+`(index, tag, min_value, default_value, max_value)`. Empty for a static
+font.
+"""
+function axes(f::Face)
+    count = Int(ccall((:hb_ot_var_get_axis_count, libhb), Cuint,
+                      (Ptr{Cvoid},), f.ptr))
+    count == 0 && return NamedTuple[]
+    n = Ref{Cuint}(count)
+    buf = Vector{_HbOtVarAxisInfoRaw}(undef, count)
+    n[] = Cuint(count)
+    GC.@preserve buf begin
+        ccall((:hb_ot_var_get_axis_infos, libhb), Cuint,
+              (Ptr{Cvoid}, Cuint, Ref{Cuint}, Ptr{Cvoid}),
+              f.ptr, Cuint(0), n, pointer(buf))
+    end
+    return [(index = Int(a.axis_index), tag = tag_string(a.tag),
+             min_value = Float64(a.min_value),
+             default_value = Float64(a.default_value),
+             max_value = Float64(a.max_value)) for a in buf[1:Int(n[])]]
+end
+
+"""
+    named_instances(face::Face) -> Vector{NamedTuple}
+
+The named instances a variable font ships, each as `(index, name, coords)`
+where `coords` are design-space values, one per axis.
+"""
+function named_instances(f::Face)
+    count = Int(ccall((:hb_ot_var_get_named_instance_count, libhb), Cuint,
+                      (Ptr{Cvoid},), f.ptr))
+    count == 0 && return NamedTuple[]
+    naxes = length(axes(f))
+    out = NamedTuple[]
+    for i in 0:(count - 1)
+        nid = ccall((:hb_ot_var_named_instance_get_subfamily_name_id, libhb),
+                    UInt32, (Ptr{Cvoid}, Cuint), f.ptr, Cuint(i))
+        n = Ref{Cuint}(naxes)
+        coords = Vector{Cfloat}(undef, naxes)
+        GC.@preserve coords begin
+            ccall((:hb_ot_var_named_instance_get_design_coords, libhb), Cuint,
+                  (Ptr{Cvoid}, Cuint, Ref{Cuint}, Ptr{Cfloat}),
+                  f.ptr, Cuint(i), n, pointer(coords))
+        end
+        label = name(f, nid)
+        push!(out, (index = i, name = label === nothing ? "" : label,
+                    coords = Float64.(coords[1:Int(n[])])))
+    end
+    return out
+end
+
+"""
+    set_variations!(font::Font, variations)
+
+Position the font in its design space. `variations` is any collection of
+`"tag" => value` pairs, in design-space units.
+
+```julia
+set_variations!(font, ["wght" => 700, "wdth" => 87.5])
+```
+"""
+function set_variations!(f::Font, variations)
+    vars = _HbVariationRaw[
+        _HbVariationRaw(tag(String(p.first)), Cfloat(p.second)) for p in variations]
+    GC.@preserve vars begin
+        ccall((:hb_font_set_variations, libhb), Cvoid,
+              (Ptr{Cvoid}, Ptr{Cvoid}, Cuint),
+              f.ptr, isempty(vars) ? C_NULL : pointer(vars), Cuint(length(vars)))
+    end
+    return f
+end
+
+"""
+    var_coords_design(font::Font) -> Vector{Float64}
+    var_coords_normalized(font::Font) -> Vector{Float64}
+
+The font's position in design space (the units axes are declared in) or in
+normalised space (−1 … 0 … 1 per axis).
+"""
+function var_coords_design(f::Font)::Vector{Float64}
+    n = Ref{Cuint}(0)
+    ptr = ccall((:hb_font_get_var_coords_design, libhb), Ptr{Cfloat},
+                (Ptr{Cvoid}, Ref{Cuint}), f.ptr, n)
+    ptr == C_NULL && return Float64[]
+    return Float64.(unsafe_wrap(Array, ptr, Int(n[])))
+end
+
+function var_coords_normalized(f::Font)::Vector{Float64}
+    n = Ref{Cuint}(0)
+    ptr = ccall((:hb_font_get_var_coords_normalized, libhb), Ptr{Cint},
+                (Ptr{Cvoid}, Ref{Cuint}), f.ptr, n)
+    ptr == C_NULL && return Float64[]
+    # Normalised coordinates are 2.14 fixed point.
+    return [Float64(v) / 16384 for v in unsafe_wrap(Array, ptr, Int(n[]))]
+end
+
+# --- OpenType layout ------------------------------------------------------
+
+"""
+    has_substitution(face::Face) -> Bool
+    has_positioning(face::Face) -> Bool
+    has_glyph_classes(face::Face) -> Bool
+
+Whether the face carries a GSUB table, a GPOS table, or GDEF glyph
+classes.
+"""
+has_substitution(f::Face)::Bool =
+    ccall((:hb_ot_layout_has_substitution, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+has_positioning(f::Face)::Bool =
+    ccall((:hb_ot_layout_has_positioning, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+has_glyph_classes(f::Face)::Bool =
+    ccall((:hb_ot_layout_has_glyph_classes, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+function _layout_table(t::Symbol)::UInt32
+    t in (:GSUB, :GPOS) || throw(ArgumentError(
+        "unknown layout table :$t (expected :GSUB or :GPOS)"))
+    return tag(String(t))
+end
+
+# Both tag-listing calls share this in/out-count loop.
+function _collect_tags(call::Function)::Vector{String}
+    tags = String[]
+    offset = Cuint(0)
+    buf = Vector{UInt32}(undef, 32)
+    while true
+        count = Ref{Cuint}(length(buf))
+        total = call(offset, count, buf)
+        n = Int(count[])
+        n == 0 && break
+        append!(tags, tag_string(buf[i]) for i in 1:n)
+        offset += Cuint(n)
+        offset >= total && break
+    end
+    return tags
+end
+
+"""
+    layout_script_tags(face::Face, table::Symbol) -> Vector{String}
+
+The script tags a layout table covers, e.g. `"latn"`, `"DFLT"`. `table`
+is `:GSUB` or `:GPOS`.
+"""
+layout_script_tags(f::Face, table::Symbol)::Vector{String} =
+    (t = _layout_table(table); _collect_tags() do offset, count, buf
+        ccall((:hb_ot_layout_table_get_script_tags, libhb), Cuint,
+              (Ptr{Cvoid}, UInt32, Cuint, Ref{Cuint}, Ptr{UInt32}),
+              f.ptr, t, offset, count, buf)
+    end)
+
+"""
+    layout_feature_tags(face::Face, table::Symbol) -> Vector{String}
+
+Every feature tag a layout table defines, e.g. `"liga"`, `"kern"`.
+"""
+layout_feature_tags(f::Face, table::Symbol)::Vector{String} =
+    (t = _layout_table(table); _collect_tags() do offset, count, buf
+        ccall((:hb_ot_layout_table_get_feature_tags, libhb), Cuint,
+              (Ptr{Cvoid}, UInt32, Cuint, Ref{Cuint}, Ptr{UInt32}),
+              f.ptr, t, offset, count, buf)
+    end)
+
+const _GLYPH_CLASSES = (:unclassified, :base_glyph, :ligature, :mark, :component)
+
+"""
+    glyph_class(face::Face, glyph) -> Symbol
+
+The glyph's GDEF class: `:base_glyph`, `:ligature`, `:mark`, `:component`,
+or `:unclassified`.
+"""
+function glyph_class(f::Face, glyph::Integer)::Symbol
+    v = ccall((:hb_ot_layout_get_glyph_class, libhb), Cint,
+              (Ptr{Cvoid}, UInt32), f.ptr, UInt32(glyph))
+    return 0 <= v <= 4 ? _GLYPH_CLASSES[v + 1] : :unclassified
+end
+
+const _BASELINE_TAGS = (:romn, :hang, :icfb, :icft, :ideo, :idtp, :math)
+
+"""
+    baseline(font::Font, which::Symbol; direction = :ltr,
+             script = :Latn, language = "en") -> Int32
+
+Position of a baseline, in the font's scale units. `which` is `:romn`
+(roman, the Latin baseline), `:hang` (hanging), `:ideo`/`:idtp`
+(ideographic), `:icfb`/`:icft` (ideographic character face) or `:math`.
+
+A value is always produced: HarfBuzz falls back to a sensible synthesis
+when the font declares no `BASE` table.
+"""
+function baseline(f::Font, which::Symbol; direction::Symbol = :ltr,
+                  script::Symbol = :Latn, language::AbstractString = "en")::Int32
+    which in _BASELINE_TAGS && (nothing)
+    which in _BASELINE_TAGS || throw(ArgumentError(
+        "unknown baseline :$which (expected one of " *
+        join(map(b -> ":" * String(b), _BASELINE_TAGS), ", ") * ")"))
+    out = Ref{Int32}(0)
+    ccall((:hb_ot_layout_get_baseline_with_fallback, libhb), Cvoid,
+          (Ptr{Cvoid}, UInt32, Cint, UInt32, UInt32, Ref{Int32}),
+          f.ptr, tag(String(which)), _direction_value(direction),
+          _script_value(script), tag(String(language)), out)
+    return out[]
+end
+
+# --- Font state -----------------------------------------------------------
+
+"""
+    sub_font(font::Font) -> Font
+
+A child font sharing the parent's face and starting from its settings.
+Changing the child leaves the parent untouched, which is how a renderer
+varies size or variations without re-reading the face.
+"""
+function sub_font(f::Font)::Font
+    ptr = ccall((:hb_font_create_sub_font, libhb), Ptr{Cvoid}, (Ptr{Cvoid},), f.ptr)
+    ptr == C_NULL && throw(ErrorException("hb_font_create_sub_font failed"))
+    # `hb_font_create_sub_font` takes its own reference on the parent, but
+    # the parent's backing objects must outlive the child too.
+    child = Font(ptr, f._face, f)
+    finalizer(_font_destroy, child)
+    return child
+end
+
+"""
+    synthetic_slant(font::Font) -> Float64
+    synthetic_slant!(font::Font, ratio)
+
+Skew applied to glyphs to fake an italic, as a ratio (0.25 is a common
+choice). Purely graphical: no different glyphs are selected.
+"""
+synthetic_slant(f::Font)::Float64 =
+    Float64(ccall((:hb_font_get_synthetic_slant, libhb), Cfloat, (Ptr{Cvoid},), f.ptr))
+
+function synthetic_slant!(f::Font, ratio::Real)
+    ccall((:hb_font_set_synthetic_slant, libhb), Cvoid,
+          (Ptr{Cvoid}, Cfloat), f.ptr, Cfloat(ratio))
+    return f
+end
+
+"""
+    synthetic_bold(font::Font) -> Tuple{Float64,Float64,Bool}
+    synthetic_bold!(font::Font, x_embolden, y_embolden = x_embolden;
+                    in_place = false)
+
+Emboldening applied to fake a bold weight, as a fraction of the em. Prefer
+a real bold or a `wght` variation where the font offers one.
+"""
+function synthetic_bold(f::Font)
+    x = Ref{Cfloat}(0); y = Ref{Cfloat}(0); inplace = Ref{Cint}(0)
+    ccall((:hb_font_get_synthetic_bold, libhb), Cvoid,
+          (Ptr{Cvoid}, Ref{Cfloat}, Ref{Cfloat}, Ref{Cint}), f.ptr, x, y, inplace)
+    return (Float64(x[]), Float64(y[]), inplace[] != 0)
+end
+
+function synthetic_bold!(f::Font, x_embolden::Real, y_embolden::Real = x_embolden;
+                         in_place::Bool = false)
+    ccall((:hb_font_set_synthetic_bold, libhb), Cvoid,
+          (Ptr{Cvoid}, Cfloat, Cfloat, Cint),
+          f.ptr, Cfloat(x_embolden), Cfloat(y_embolden), Cint(in_place))
+    return f
+end
+
+"""
+    is_synthetic(font::Font) -> Bool
+
+True when synthetic bold or slant is in effect.
+"""
+is_synthetic(f::Font)::Bool =
+    ccall((:hb_font_is_synthetic, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
+"""
+    make_immutable!(font::Font)
+    is_immutable(font::Font) -> Bool
+
+Freeze a font so later changes are refused. HarfBuzz objects are not
+thread-safe while mutable; making one immutable is what allows sharing it
+between threads.
+"""
+function make_immutable!(f::Font)
+    ccall((:hb_font_make_immutable, libhb), Cvoid, (Ptr{Cvoid},), f.ptr)
+    return f
+end
+
+is_immutable(f::Font)::Bool =
+    ccall((:hb_font_is_immutable, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+
 # --- Module initialisation ------------------------------------------------
 
 function __init__()
