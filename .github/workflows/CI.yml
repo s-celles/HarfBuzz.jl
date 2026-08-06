@@ -67,6 +67,17 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
+      # Most shaping assertions run against the fonts vendored in
+      # test/fonts, but a handful need CJK coverage, which no Linux runner
+      # ships by default. macOS and Windows already carry one, so this only
+      # levels up Linux; without it those tests report Broken instead of
+      # running.
+      - name: Install a CJK font (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          fc-list :lang=zh 2>/dev/null | head -3 || true
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1

@@ -1,4 +1,5 @@
 using TestItemRunner
+import HarfBuzz   # top level: used to probe system fonts for coverage
 
 # Every assertion about shaping runs against a font vendored with the
 # suite, so results do not depend on what a machine happens to have
@@ -6,9 +7,13 @@ using TestItemRunner
 # is known to exercise.
 const TEST_FONT = joinpath(@__DIR__, "fonts", "NotoSans-subset.ttf")
 
-# System fonts are still used, but only for coverage this one cannot give
-# (CJK) or to check that arbitrary real-world files load. Those tests skip
-# visibly rather than returning in silence -- see `@test_skip` below.
+# System fonts are still used, but only for coverage these cannot give
+# (CJK) or to check that arbitrary real-world files load. Those tests use
+# `@test_skip` inside an `if/else`, so a machine without the font reports a
+# Broken count instead of passing silently.
+#
+# Note: `return` does NOT exit a @testitem body -- TestItemRunner keeps
+# evaluating what follows -- so the guard has to be an `else` branch.
 const FONT_DIRS = filter(isdir, [
     "/System/Library/Fonts",
     "/System/Library/Fonts/Supplemental",
@@ -38,31 +43,38 @@ function _find_font_file()
     return nothing
 end
 
+const _CJK_FONT = Ref{Any}(missing)
+
 """
-Path of the first font file whose name matches one of `stems`, comparing
-case-insensitively and ignoring spaces, hyphens and underscores.
+Path of a system font that actually covers U+6F22 (漢).
+
+Coverage is asked of HarfBuzz rather than guessed from the file name,
+which is both more honest and platform-independent: `fonts-noto-cjk` on
+Linux, Hiragino on macOS and MS Gothic on Windows all answer the same
+question. The result is cached; `nothing` means this machine has none.
 """
-function _find_font_named(stems)
-    norm(s) = replace(lowercase(s), r"[ _-]" => "")
-    wanted = norm.(stems)
-    for dir in FONT_DIRS
-        for (root, _, files) in walkdir(dir; onerror = _ -> nothing)
-            for f in sort(files)
-                any(endswith(lowercase(f), e) for e in FONT_EXTS) || continue
-                base = norm(splitext(f)[1])
-                any(w -> base == w, wanted) && return joinpath(root, f)
+function _find_cjk_font()
+    _CJK_FONT[] === missing || return _CJK_FONT[]
+    found = nothing
+    for dir in FONT_DIRS, (root, _, files) in walkdir(dir; onerror = _ -> nothing)
+        for f in sort(files)
+            any(endswith(lowercase(f), e) for e in FONT_EXTS) || continue
+            path = joinpath(root, f)
+            try
+                font = HarfBuzz.Font(path; size = 18)
+                if HarfBuzz.has_glyph(font, UInt32(0x6f22))
+                    found = path
+                    break
+                end
+            catch
+                # Unreadable or exotic file: not our problem here.
             end
         end
+        found === nothing || break
     end
-    return nothing
+    _CJK_FONT[] = found
+    return found
 end
-
-# Font files with CJK coverage.
-const CJK_FILES = ["Hiragino Sans GB", "NotoSansCJK-Regular",
-                   "NotoSansCJKsc-Regular", "AppleSDGothicNeo", "msyh",
-                   "simsun", "malgun"]
-
-_find_cjk_font() = _find_font_named(CJK_FILES)
 
 @testitem "Aqua QA" begin
     import Aqua
@@ -215,12 +227,12 @@ end
     path = Main._find_font_file()
     if path === nothing
         @test_skip "no system font found on this machine"
-        return
+    else
+        face = HarfBuzz.Face(path)
+        @test HarfBuzz.upem(face) > 0
+        font = HarfBuzz.Font(face; size = 18)
+        @test HarfBuzz.shape(font, "Hello") isa HarfBuzz.ShapeResult
     end
-    face = HarfBuzz.Face(path)
-    @test HarfBuzz.upem(face) > 0
-    font = HarfBuzz.Font(face; size = 18)
-    @test HarfBuzz.shape(font, "Hello") isa HarfBuzz.ShapeResult
 end
 
 # --- Shaping --------------------------------------------------------------
@@ -259,12 +271,12 @@ end
     path = Main._find_cjk_font()
     if path === nothing
         @test_skip "needs a system font with CJK coverage"
-        return
+    else
+        font = HarfBuzz.Font(path; size = 18)
+        result = HarfBuzz.shape(font, "🇫🇷")
+        @test length(result.infos) >= 1
+        @test minimum(HarfBuzz.clusters(result)) == 0
     end
-    font = HarfBuzz.Font(path; size = 18)
-    result = HarfBuzz.shape(font, "🇫🇷")
-    @test length(result.infos) >= 1
-    @test minimum(HarfBuzz.clusters(result)) == 0
 end
 
 @testitem "shape CJK" begin
@@ -272,15 +284,14 @@ end
     path = Main._find_cjk_font()
     if path === nothing
         @test_skip "needs a system font with CJK coverage"
-        return
+    else
+        font = HarfBuzz.Font(path; size = 18)
+        result = HarfBuzz.shape(font, "漢字")
+        # Some fonts ligate, or map clusters differently, so only the
+        # floor is asserted.
+        @test length(result.infos) >= 1
+        @test minimum(HarfBuzz.clusters(result)) == 0
     end
-    font = HarfBuzz.Font(path; size = 18)
-    result = HarfBuzz.shape(font, "漢字")
-    # Should produce at least 1 glyph (some fonts may ligate or have
-    # different cluster mappings across platforms)
-    @test length(result.infos) >= 1
-    # Clusters should start at byte 0
-    @test minimum(HarfBuzz.clusters(result)) == 0
 end
 
 # --- Library and tag helpers ---------------------------------------------
