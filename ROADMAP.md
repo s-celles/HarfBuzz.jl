@@ -409,10 +409,49 @@ the public API and are cheapest to settle before 0.1.0 is released.
    funcs)? If the latter, is that one package or a family
    (`HarfBuzz.jl` + `HarfBuzzSubset.jl`)?
 
-8. **Package name and registration.** Is `HarfBuzz.jl` intended for the
-   General registry? If so, the name should be checked against existing
-   packages and against the JLL naming convention early, since renaming after
-   registration is painful.
+8. **Where the repository lives, and when it is registered.** Registration
+   in General is **deferred**: a transfer to another GitHub organisation is
+   under consideration, and moving after registration is more disruptive
+   than moving before.
+
+   The name is not the constraint — `HarfBuzz` is free in General, which
+   holds only `HarfBuzz_jll` and `HarfBuzz_ICU_jll`.
+
+   The two candidate homes answer different questions:
+
+   - **`harfbuzz/`** hosts the official bindings, all alive: `harfbuzzjs`
+     (277★, pushed 2026-07-31), `uharfbuzz` (108★, 2026-07-31),
+     `harfbuzz_rs` (64★, 2025-08), `luaharfbuzz` (13★, 2026-06). It signals
+     "the Julia binding" and puts the package where people look for
+     HarfBuzz. But upstream does not do Julia: nobody there would review
+     Julia code, register the package, or mind TagBot and CompatHelper.
+   - **`JuliaGraphics/`** hosts the technical neighbourhood: `FreeType.jl`,
+     `FreeTypeAbstraction.jl`, `Fontconfig.jl`, `Cairo.jl`, `Luxor.jl`,
+     `ColorTypes.jl`. Julia conventions are routine there, and the packages
+     open question 4 named as the right owners of font matching —
+     FreeTypeAbstraction and Fontconfig — are already in it, so a future
+     `find_font` would have an obvious home. Activity is uneven, though:
+     `Luxor.jl` was pushed 2026-08-02 and `ColorTypes.jl` 2026-07-04, but
+     `FreeType.jl` has not moved since 2023-12 nor `Fontconfig.jl` since
+     2023-01, so the promise of co-maintainers is partly theoretical.
+
+   The two are not mutually exclusive in spirit: the package can live in
+   JuliaGraphics and still be listed as the Julia binding from the
+   `harfbuzz/` README or harfbuzz.github.io. That buys the upstream
+   visibility without asking upstream to adopt Julia code, and costs an
+   email rather than a transfer.
+
+   Whichever is chosen, a transfer needs these updated — GitHub redirects
+   URLs, but not file contents or secrets:
+
+   - `docs/make.jl`: `repo = "github.com/s-celles/HarfBuzz.jl.git"` and
+     `canonical = "https://s-celles.github.io/HarfBuzz.jl"`
+   - `README.md`: the three badge URLs (docs stable, docs dev, CI)
+   - `SECURITY.md`: the private advisory link
+   - the `DOCUMENTER_KEY` secret, which does not follow the repository and
+     must be regenerated
+   - the `gh-pages` publication URL, so the documentation stays broken
+     until both of the above are redone
 
 9. **Minimum HarfBuzz version.** Compat is currently pinned to
    `HarfBuzz_jll = "100.14002"`. Several Phase 3/4 functions
