@@ -3,8 +3,31 @@ uuid = "9e8b9c2b-5c3e-4e6f-b1a4-2c0f6b4f3e2a"
 authors = ["Sebastien Celles <s.celles@gmail.com>"]
 version = "0.1.0"
 
+# A note on the HarfBuzz_jll bound, which is load-bearing far beyond
+# this package.
+#
+# It used to be "100.14002", and that is a bigger claim than it looks.
+# HarfBuzz_jll 100.x is accepted by NO Pango_jll -- every Pango_jll from
+# 1.47 on pins HarfBuzz_jll to the 2.x or 8.x series, and only the
+# ancient 1.42.4, which predates compat entries, takes anything else. So
+# requiring 100.x excludes Pango, which excludes libdecor_jll, which
+# excludes GLFW_jll 3.4. Anything in the same environment that needs
+# GLFW 3.4 is then unresolvable, and downstream that showed up as a
+# SEGFAULT rather than a resolver error: CImGui's libcimgui calls
+# `glfwGetPlatform`, a 3.4-only symbol, so pinned to GLFW 3.3.9 it
+# called through a null pointer.
+#
+# The bound was written because the outline code needs
+# `hb_draw_funcs_create`. HarfBuzz_jll 8.5.1 exports it -- and, on a
+# symbol-by-symbol audit, every other one of the 158 this package calls
+# except `hb_font_is_synthetic` (HarfBuzz 10), which `is_synthetic` now
+# computes when absent. The subset entry points it also calls live in
+# libharfbuzz-subset, which 8.5.1 ships.
 [deps]
 HarfBuzz_jll = "2e76f6c2-a576-52d4-95c1-20adfe4de566"
+# For `_has_is_synthetic`: which HarfBuzz series we actually got is a
+# question about the loaded library, so it is answered with `dlsym`.
+Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 
 [weakdeps]
 FreeType = "b38be410-82b0-50bf-ab77-7b57e271db43"
@@ -15,7 +38,8 @@ HarfBuzzFreeTypeExt = "FreeType"
 [compat]
 Aqua = "0.8"
 FreeType = "4"
-HarfBuzz_jll = "100.14002"
+HarfBuzz_jll = "8.5.1, 100.14002"
+Libdl = "1"
 Test = "1"
 TestItemRunner = "1"
 julia = "1.12"

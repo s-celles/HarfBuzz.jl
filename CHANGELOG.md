@@ -10,6 +10,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Nothing has been released yet, so this section describes the package as it
 now stands rather than a trail of intermediate API changes.
 
+### Changed
+
+- Support the HarfBuzz 8.x series as well as 100.x:
+  `[compat] HarfBuzz_jll = "8.5.1, 100.14002"`. The 100.x-only bound was
+  written for `hb_draw_funcs_create`, which 8.5.1 does export; a
+  symbol-by-symbol audit of all 158 entry points this package calls
+  found exactly one genuinely newer, `hb_font_is_synthetic`.
+
+  The bound was not a local matter. HarfBuzz_jll 100.x is accepted by no
+  `Pango_jll` — every one from 1.47 on pins HarfBuzz_jll to 2.x or 8.x —
+  so requiring it excluded Pango, hence `libdecor_jll`, hence
+  `GLFW_jll` 3.4. Anything needing GLFW 3.4 alongside this package was
+  unresolvable, and downstream that surfaced as a segfault rather than a
+  resolver error: CImGui's `libcimgui` calls `glfwGetPlatform`, a
+  3.4-only symbol, so held at 3.3.9 it called through a null pointer.
+
+### Fixed
+
+- `is_synthetic` works on HarfBuzz 8.x, where `hb_font_is_synthetic`
+  does not exist, by computing it from `synthetic_bold` and
+  `synthetic_slant`. Not an approximation: upstream's implementation is
+  exactly `x_embolden || y_embolden || slant`.
+- `deserialize!` accepts the bracketed text form on HarfBuzz 8.x.
+  `serialize` emits `[H=0+694|e=1+694]`, which 8.x rejects even though
+  it is that library's own output, so a round trip failed there. The
+  brackets are now stripped and the string pipe-terminated when the
+  loaded library is one that needs it — decided by probe, and applied
+  before the call, since `hb_buffer_deserialize_glyphs` appends and a
+  rejected parse still leaves partial results behind.
+
 ### Added
 
 - Initial package wrapping HarfBuzz via `HarfBuzz_jll`, with the object
