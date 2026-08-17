@@ -1214,13 +1214,11 @@ function deserialize!(buf::Buffer, text::AbstractString;
     return buf
 end
 
-"""
-True when this `libharfbuzz` parses the bracketed text form that
-[`serialize`](@ref) produces. HarfBuzz 10 does; 8.x does not.
-
-A capability probe rather than a version comparison, and cheap: one
-parse of `[1=0+100]` into a throwaway buffer, cached forever.
-"""
+# True when this `libharfbuzz` parses the bracketed text form that
+# `serialize` produces. HarfBuzz 10 does; 8.x does not.
+#
+# A capability probe rather than a version comparison, and cheap: one
+# parse of `[1=0+100]` into a throwaway buffer, cached forever.
 const _ACCEPTS_BRACKETED_TEXT = Ref{Union{Nothing,Bool}}(nothing)
 
 function _accepts_bracketed_text()::Bool
@@ -1979,15 +1977,13 @@ function synthetic_bold!(f::Font, x_embolden::Real, y_embolden::Real = x_embolde
     return f
 end
 
-"""
-True when `libharfbuzz` exports `hb_font_is_synthetic`, added in
-HarfBuzz 10.
-
-The ONE symbol in this package that the 8.x series does not have, and
-the only reason `[compat] HarfBuzz_jll` needs to know which series it
-got. Probed rather than inferred from a version number, and resolved
-once -- it cannot change while the library is loaded.
-"""
+# True when `libharfbuzz` exports `hb_font_is_synthetic`, added in
+# HarfBuzz 10.
+#
+# The ONE symbol in this package that the 8.x series does not have, and
+# the only reason `[compat] HarfBuzz_jll` needs to know which series it
+# got. Probed rather than inferred from a version number, and resolved
+# once -- it cannot change while the library is loaded.
 const _HAS_IS_SYNTHETIC = Ref{Union{Nothing,Bool}}(nothing)
 
 function _has_is_synthetic()::Bool
