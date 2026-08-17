@@ -1,6 +1,7 @@
 module HarfBuzz
 
 using HarfBuzz_jll
+using Libdl
 
 const libhb = HarfBuzz_jll.libharfbuzz_path
 
@@ -1187,12 +1188,56 @@ function deserialize!(buf::Buffer, text::AbstractString;
     fmt === nothing && throw(ArgumentError(
         "unknown serialization format :$format (expected :text or :json)"))
     fontptr = font === nothing ? C_NULL : font.ptr
-    endptr = Ref{Ptr{UInt8}}(C_NULL)
+
+    # HarfBuzz 8.x rejects the bracketed text form that its OWN
+    # `serialize` emits -- `[H=0+694|e=1+694]` -- which 10.x accepts, so
+    # `deserialize!(serialize(buf))` failed outright on the older
+    # series. 8.x parses the bare form, and commits a glyph only once a
+    # `|` closes it, so the last one is dropped unless the string ends
+    # in one.
+    #
+    # Rewritten BEFORE the call and not as a retry after a failure:
+    # `hb_buffer_deserialize_glyphs` APPENDS, and a rejected parse still
+    # leaves behind whatever it managed to read. Retrying on top of that
+    # buffer duplicated the glyphs.
+    s = String(text)
+    if format === :text && !_accepts_bracketed_text() &&
+            startswith(s, '[') && endswith(s, ']')
+        inner = s[nextind(s, 1):prevind(s, lastindex(s))]
+        s = isempty(inner) || endswith(inner, '|') ? inner : inner * "|"
+    end
+
     ok = ccall((:hb_buffer_deserialize_glyphs, libhb), Cint,
                (Ptr{Cvoid}, Ptr{UInt8}, Cint, Ref{Ptr{UInt8}}, Ptr{Cvoid}, UInt32),
-               buf.ptr, String(text), Cint(sizeof(text)), endptr, fontptr, fmt)
+               buf.ptr, s, Cint(sizeof(s)), Ref{Ptr{UInt8}}(C_NULL), fontptr, fmt)
     ok == 0 && throw(ArgumentError("cannot parse serialized glyphs"))
     return buf
+end
+
+"""
+True when this `libharfbuzz` parses the bracketed text form that
+[`serialize`](@ref) produces. HarfBuzz 10 does; 8.x does not.
+
+A capability probe rather than a version comparison, and cheap: one
+parse of `[1=0+100]` into a throwaway buffer, cached forever.
+"""
+const _ACCEPTS_BRACKETED_TEXT = Ref{Union{Nothing,Bool}}(nothing)
+
+function _accepts_bracketed_text()::Bool
+    v = _ACCEPTS_BRACKETED_TEXT[]
+    v === nothing || return v
+    ok = try
+        probe = Buffer()
+        s = "[1=0+100]"
+        ccall((:hb_buffer_deserialize_glyphs, libhb), Cint,
+              (Ptr{Cvoid}, Ptr{UInt8}, Cint, Ref{Ptr{UInt8}}, Ptr{Cvoid}, UInt32),
+              probe.ptr, s, Cint(sizeof(s)), Ref{Ptr{UInt8}}(C_NULL),
+              C_NULL, _SERIALIZE_FORMATS[:text]) != 0
+    catch
+        true  # Probe failed for some other reason; leave parsing alone.
+    end
+    _ACCEPTS_BRACKETED_TEXT[] = ok
+    return ok
 end
 
 const _DIFF_FLAGS = (
@@ -1935,12 +1980,47 @@ function synthetic_bold!(f::Font, x_embolden::Real, y_embolden::Real = x_embolde
 end
 
 """
+True when `libharfbuzz` exports `hb_font_is_synthetic`, added in
+HarfBuzz 10.
+
+The ONE symbol in this package that the 8.x series does not have, and
+the only reason `[compat] HarfBuzz_jll` needs to know which series it
+got. Probed rather than inferred from a version number, and resolved
+once -- it cannot change while the library is loaded.
+"""
+const _HAS_IS_SYNTHETIC = Ref{Union{Nothing,Bool}}(nothing)
+
+function _has_is_synthetic()::Bool
+    v = _HAS_IS_SYNTHETIC[]
+    v === nothing || return v
+    ok = try
+        h = Libdl.dlopen(libhb, Libdl.RTLD_LAZY)
+        Libdl.dlsym(h, :hb_font_is_synthetic; throw_error = false) !== nothing
+    catch
+        false
+    end
+    _HAS_IS_SYNTHETIC[] = ok
+    return ok
+end
+
+"""
     is_synthetic(font::Font) -> Bool
 
 True when synthetic bold or slant is in effect.
+
+On HarfBuzz 8.x, where `hb_font_is_synthetic` does not exist, this is
+computed from the two settings it reports on. That is not an
+approximation: upstream's implementation is exactly
+`x_embolden || y_embolden || slant`, and both getters are present in
+8.x, so the two paths agree by construction.
 """
-is_synthetic(f::Font)::Bool =
-    ccall((:hb_font_is_synthetic, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+function is_synthetic(f::Font)::Bool
+    if _has_is_synthetic()
+        return ccall((:hb_font_is_synthetic, libhb), Cint, (Ptr{Cvoid},), f.ptr) != 0
+    end
+    x, y, _ = synthetic_bold(f)
+    return x != 0 || y != 0 || synthetic_slant(f) != 0
+end
 
 """
     make_immutable!(font::Font)
